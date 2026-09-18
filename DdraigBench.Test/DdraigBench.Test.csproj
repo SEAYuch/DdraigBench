@@ -1,0 +1,41 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <!-- xunit.v3 要求测试工程可执行 -->
+        <OutputType>Exe</OutputType>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <!-- xUnit1051 为“传入 TestContext.Current.CancellationToken”的样式提示，非正确性问题，统一关闭以保持零告警 -->
+        <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="coverlet.collector" Version="10.0.1">
+          <PrivateAssets>all</PrivateAssets>
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+        <PackageReference Include="xunit.v3" Version="4.0.1" />
+        <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
+          <PrivateAssets>all</PrivateAssets>
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Xunit"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="FreeSql" Version="3.5.311" />
+        <PackageReference Include="FreeSql.Provider.Sqlite" Version="3.5.311" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\DdraigBench.Core\DdraigBench.Core.csproj" />
+        <ProjectReference Include="..\DdraigBench\DdraigBench.csproj" />
+    </ItemGroup>
+
+</Project>

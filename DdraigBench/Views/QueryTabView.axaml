@@ -1,0 +1,29 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:DdraigBench.ViewModels"
+             xmlns:controls="using:DdraigBench.Controls"
+             x:Class="DdraigBench.Views.QueryTabView"
+             x:DataType="vm:QueryTabViewModel">
+
+    <Grid RowDefinitions="Auto,*,Auto">
+        <TextBox Grid.Row="0"
+                 Text="{Binding Sql}"
+                 AcceptsReturn="True"
+                 TextWrapping="NoWrap"
+                 Height="120"
+                 Margin="8" />
+
+        <DataGrid Grid.Row="1"
+                  Margin="8,0"
+                  ItemsSource="{Binding Rows}"
+                  controls:ResultColumns.Headers="{Binding Columns}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  CanUserSortColumns="False" />
+
+        <TextBlock Grid.Row="2"
+                   Margin="8"
+                   Text="{Binding Status}"
+                   TextTrimming="CharacterEllipsis" />
+    </Grid>
+</UserControl>

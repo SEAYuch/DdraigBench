@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="DdraigBench.Core/DdraigBench.Core.csproj" />
+  <Project Path="DdraigBench.Test/DdraigBench.Test.csproj" />
+  <Project Path="DdraigBench/DdraigBench.csproj" />
+</Solution>
