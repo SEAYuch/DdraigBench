@@ -74,9 +74,39 @@ public sealed class QueryRunnerTests
         using var fsql = db.CreateFsql();
         var runner = new QueryRunner(fsql);
 
-        var result = await runner.ExecuteAsync("SELECT * FROM does_not_exist", ct: TestContext.Current.CancellationToken);
+        var result = await runner.ExecuteAsync("SELECT * FROM does_not_exist");
 
         Assert.NotNull(result.Error);
         Assert.Empty(result.Rows);
+    }
+
+    [Fact]
+    public async Task Truncated_is_true_when_more_rows_than_cap()
+    {
+        using var db = new TempSqliteDatabase();
+        using var fsql = db.CreateFsql();
+        fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
+        fsql.Ado.ExecuteNonQuery("INSERT INTO t (id) VALUES (1), (2), (3)");
+        var runner = new QueryRunner(fsql);
+
+        var result = await runner.ExecuteAsync("SELECT id FROM t ORDER BY id", maxRows: 2);
+
+        Assert.True(result.Truncated);
+        Assert.Equal(2, result.Rows.Count);
+    }
+
+    [Fact]
+    public async Task Truncated_is_false_when_rows_equal_cap_exactly()
+    {
+        using var db = new TempSqliteDatabase();
+        using var fsql = db.CreateFsql();
+        fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
+        fsql.Ado.ExecuteNonQuery("INSERT INTO t (id) VALUES (1), (2), (3)");
+        var runner = new QueryRunner(fsql);
+
+        var result = await runner.ExecuteAsync("SELECT id FROM t ORDER BY id", maxRows: 3);
+
+        Assert.False(result.Truncated);
+        Assert.Equal(3, result.Rows.Count);
     }
 }

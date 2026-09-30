@@ -8,5 +8,9 @@
     <ItemGroup>
         <PackageReference Include="FreeSql" Version="3.5.311" />
         <PackageReference Include="FreeSql.Provider.Sqlite" Version="3.5.311" />
+        <PackageReference Include="FreeSql.Provider.MySqlConnector" Version="3.5.311" />
+        <PackageReference Include="FreeSql.Provider.PostgreSQL" Version="3.5.311" />
+        <!-- M4-4：Windows DPAPI 口令保护（MIT / dotnet-runtime；仅 Windows 生效，其他平台见 SecretProtectors 回退） -->
+        <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
     </ItemGroup>
 </Project>

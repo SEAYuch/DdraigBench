@@ -9,4 +9,11 @@ public interface IFilePicker
         string fileTypeName,
         IReadOnlyList<string> patterns,
         CancellationToken ct = default);
+
+    Task<string?> PickSaveFileAsync(
+        string title,
+        string fileTypeName,
+        IReadOnlyList<string> patterns,
+        string? suggestedFileName = null,
+        CancellationToken ct = default);
 }

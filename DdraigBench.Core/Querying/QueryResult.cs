@@ -7,4 +7,5 @@ public sealed record QueryResult(
     IReadOnlyList<object?[]> Rows,
     long AffectedRows,
     TimeSpan Elapsed,
-    string? Error);
+    string? Error,
+    bool Truncated = false);

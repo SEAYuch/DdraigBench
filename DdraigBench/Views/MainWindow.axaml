@@ -20,15 +20,36 @@
 
     <DockPanel>
         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="8">
-            <Button Command="{Binding OpenSqliteCommand}">
+            <Button Command="{Binding OpenConnectionCommand}">
                 <StackPanel Orientation="Horizontal" Spacing="6">
                     <ic:FluentIcon Icon="Database" IconVariant="Regular" IconSize="Size16"
                                    VerticalAlignment="Center" />
-                    <TextBlock Text="打开 SQLite…" VerticalAlignment="Center" />
+                    <TextBlock Text="新建连接…" VerticalAlignment="Center" />
                 </StackPanel>
             </Button>
             <Button Command="{Binding NewQueryCommand}" Content="新建查询" />
             <Button Command="{Binding SelectedTab.ExecuteCommand}" Content="执行" />
+            <Button Command="{Binding SelectedTab.CancelCommand}"
+                    Content="取消"
+                    IsEnabled="{Binding SelectedTab.CanCancel}" />
+            <CheckBox Content="事务"
+                      IsChecked="{Binding SelectedTab.UseTransaction}"
+                      VerticalAlignment="Center" />
+            <Button Command="{Binding SelectedTab.CommitCommand}"
+                    Content="提交"
+                    IsEnabled="{Binding SelectedTab.HasTransaction}" />
+            <Button Command="{Binding SelectedTab.RollbackCommand}"
+                    Content="回滚"
+                    IsEnabled="{Binding SelectedTab.HasTransaction}" />
+            <Button Command="{Binding SelectedTab.ExportCsvCommand}"
+                    Content="导出 CSV"
+                    IsEnabled="{Binding SelectedTab.CanExport}" />
+            <Button Command="{Binding SelectedTab.ExportInsertCommand}"
+                    Content="导出 INSERT"
+                    IsEnabled="{Binding SelectedTab.CanExport}" />
+            <Button Command="{Binding PreviewDdlCommand}"
+                    Content="预览 DDL"
+                    IsEnabled="{Binding CanPreviewDdl}" />
         </StackPanel>
 
         <Border DockPanel.Dock="Bottom" BorderThickness="0,1,0,0" Padding="8,4">
@@ -36,7 +57,9 @@
         </Border>
 
         <Grid ColumnDefinitions="280,*">
-            <TreeView ItemsSource="{Binding Databases}" Margin="8">
+            <TreeView ItemsSource="{Binding Databases}"
+                      SelectedItem="{Binding SelectedNode}"
+                      Margin="8">
                 <TreeView.ItemTemplate>
                     <TreeDataTemplate ItemsSource="{Binding Children}"
                                       x:DataType="vm:ConnectionTreeNodeViewModel">

@@ -16,16 +16,21 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
     public ConnectionTreeNodeViewModel(
         string name,
         DbObjectKind kind,
-        Func<ConnectionTreeNodeViewModel, Task>? loadChildren = null)
+        Func<ConnectionTreeNodeViewModel, Task>? loadChildren = null,
+        string? database = null)
     {
         Name = name;
         Kind = kind;
+        Database = database;
         _loadChildren = loadChildren;
     }
 
     public string Name { get; }
 
     public DbObjectKind Kind { get; }
+
+    /// <summary>所属数据库（DDL 预览需要库名 + 表名两级）。</summary>
+    public string? Database { get; }
 
     public ObservableCollection<ConnectionTreeNodeViewModel> Children { get; } = new();
 
@@ -34,7 +39,10 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
         get => _isExpanded;
         set
         {
-            if (this.RaiseAndSetIfChanged(ref _isExpanded, value) && value && !_loaded)
+            var wasExpanded = _isExpanded;
+            this.RaiseAndSetIfChanged(ref _isExpanded, value);
+
+            if (!wasExpanded && value && !_loaded)
             {
                 _loaded = true;
                 if (_loadChildren is not null)

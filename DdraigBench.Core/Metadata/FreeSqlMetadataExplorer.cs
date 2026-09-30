@@ -1,5 +1,6 @@
 // DdraigBench — IMetadataExplorer 的 FreeSql(IDbFirst) 实现
 
+using DdraigBench.Core.Dialects;
 using DdraigBench.Core.Sessions;
 using FreeSql.DatabaseModel;
 
@@ -55,5 +56,23 @@ public sealed class FreeSqlMetadataExplorer : IMetadataExplorer
             return match.Columns
                 .Select(c => new DbColumnInfo(c.Name, c.DbTypeText, c.IsPrimary, c.IsNullable, c.Comment))
                 .ToList();
+        }, ct);
+
+    public Task<string?> GetDdlAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        Task.Run<string?>(() =>
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (!SqlDialects.TryGet(session.Profile.DataType, out var dialect))
+            {
+                throw new NotSupportedException($"该方言暂不支持 DDL 预览：{session.Profile.DataType}");
+            }
+
+            var match = session.Fsql.DbFirst
+                .GetTablesByDatabase(database)
+                .FirstOrDefault(t => t.Name == table);
+
+            return match is null ? null : new DdlGenerator(dialect).CreateTable(match);
         }, ct);
 }

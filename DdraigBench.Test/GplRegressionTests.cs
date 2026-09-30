@@ -1,4 +1,7 @@
-// DdraigBench — GPL 防回归（静态断言：仓库不引入 GPL/冲突源）
+// DdraigBench — GPL 防回归（静态断言 + 驱动集真测试）
+
+using System.Reflection;
+using FreeSql;
 
 namespace DdraigBench.Test;
 
@@ -39,6 +42,55 @@ public sealed class GplRegressionTests
         {
             var path = Path.Combine(AppContext.BaseDirectory, forbidden);
             Assert.False(File.Exists(path), $"{forbidden} 出现在测试输出目录：{path}");
+        }
+    }
+
+    [Fact]
+    public void MySql_provider_uses_MySqlConnector_driver()
+    {
+        // DataType.MySql 应只由 MySqlConnector 提供驱动（Provider.MySql / MySql.Data 是 GPL-2.0，禁用）
+        Assert.True(CanLoadAssembly("MySqlConnector"), "应存在 MySqlConnector 驱动程序集");
+        Assert.False(CanLoadAssembly("MySql.Data"), "不得出现 MySql.Data（GPL-2.0）");
+        Assert.False(CanLoadAssembly("FreeSql.Provider.MySql"), "不得出现 FreeSql.Provider.MySql");
+    }
+
+    [Fact]
+    public void PostgreSql_provider_uses_Npgsql_driver()
+    {
+        Assert.True(CanLoadAssembly("Npgsql"), "应存在 Npgsql 驱动程序集");
+        Assert.True(CanLoadAssembly("FreeSql.Provider.PostgreSQL"), "应存在 PostgreSQL Provider 程序集");
+    }
+
+    [Fact]
+    public void MySql_and_Sqlite_data_types_are_registered()
+    {
+        // 两个方言都能建出 IFreeSql（不连接），证明 Provider 已随程序集注册
+        using var mysql = new FreeSqlBuilder()
+            .UseConnectionString(DataType.MySql, "Server=127.0.0.1;Port=1;Database=none;Uid=none;Pwd=none")
+            .Build();
+        using var postgres = new FreeSqlBuilder()
+            .UseConnectionString(
+                DataType.PostgreSQL, "Host=127.0.0.1;Port=1;Database=none;Username=none;Password=none")
+            .Build();
+
+        Assert.Equal(DataType.MySql, mysql.Ado.DataType);
+        Assert.Equal(DataType.PostgreSQL, postgres.Ado.DataType);
+    }
+
+    private static bool CanLoadAssembly(string simpleName)
+    {
+        try
+        {
+            Assembly.Load(simpleName);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (FileLoadException)
+        {
+            return false;
         }
     }
 

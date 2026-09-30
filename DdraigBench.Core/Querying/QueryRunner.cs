@@ -1,8 +1,10 @@
-// DdraigBench — SQL 执行器（MasterPool 原始连接 + 流式分批读取）
+// DdraigBench — SQL 执行器（MasterPool 原始连接 / 事务连接 + 流式分批读取）
 
 using System.Data;
+using System.Data.Common;
 using System.Diagnostics;
 using FreeSql;
+using FreeSql.Internal.ObjectPool;
 
 namespace DdraigBench.Core.Querying;
 
@@ -17,31 +19,50 @@ public sealed class QueryRunner
     public async Task<QueryResult> ExecuteAsync(
         string sql,
         int maxRows = DefaultMaxRows,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        DbTransaction? transaction = null)
     {
         var stopwatch = Stopwatch.StartNew();
         var columns = new List<string>();
         var rows = new List<object?[]>();
         long affected = 0;
         string? error = null;
+        var truncated = false;
 
-        var pool = _fsql.Ado.MasterPool;
-        if (pool is null)
-        {
-            return new QueryResult(columns, rows, 0, TimeSpan.Zero, "MasterPool 不可用：连接未配置");
-        }
+        Object<DbConnection>? leased = null;
 
         try
         {
-            using var leased = await pool.GetAsync(ct);
-            var connection = leased.Value;
-            if (connection.State != ConnectionState.Open)
+            DbConnection connection;
+
+            if (transaction is not null)
             {
-                await connection.OpenAsync(ct);
+                // 事务期间必须跑在事务绑定的那条连接上
+                connection = transaction.Connection
+                    ?? throw new InvalidOperationException("事务未绑定连接");
+            }
+            else
+            {
+                var pool = _fsql.Ado.MasterPool;
+                if (pool is null)
+                {
+                    return new QueryResult(columns, rows, 0, TimeSpan.Zero, "MasterPool 不可用：连接未配置");
+                }
+
+                leased = await pool.GetAsync(ct);
+                connection = leased.Value;
+                if (connection.State != ConnectionState.Open)
+                {
+                    await connection.OpenAsync(ct);
+                }
             }
 
             await using var command = connection.CreateCommand();
             command.CommandText = sql;
+            if (transaction is not null)
+            {
+                command.Transaction = transaction;
+            }
 
             await using var reader = await command.ExecuteReaderAsync(ct);
             for (var i = 0; i < reader.FieldCount; i++)
@@ -56,7 +77,14 @@ public sealed class QueryRunner
                 {
                     row[i] = reader.IsDBNull(i) ? null : reader.GetValue(i);
                 }
+
                 rows.Add(row);
+            }
+
+            // 取满上限后多读一行即可区分“正好 maxRows 行”与“被截断”
+            if (columns.Count > 0 && maxRows > 0 && rows.Count >= maxRows && await reader.ReadAsync(ct))
+            {
+                truncated = true;
             }
 
             if (columns.Count == 0)
@@ -68,8 +96,12 @@ public sealed class QueryRunner
         {
             error = ex.Message;
         }
+        finally
+        {
+            leased?.Dispose();
+        }
 
         stopwatch.Stop();
-        return new QueryResult(columns, rows, affected, stopwatch.Elapsed, error);
+        return new QueryResult(columns, rows, affected, stopwatch.Elapsed, error, truncated);
     }
 }

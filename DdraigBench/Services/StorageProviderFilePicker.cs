@@ -30,4 +30,24 @@ public sealed class StorageProviderFilePicker : IFilePicker
 
         return files.Count > 0 ? files[0].TryGetLocalPath() : null;
     }
+
+    public async Task<string?> PickSaveFileAsync(
+        string title,
+        string fileTypeName,
+        IReadOnlyList<string> patterns,
+        string? suggestedFileName = null,
+        CancellationToken ct = default)
+    {
+        var file = await _topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = title,
+            SuggestedFileName = suggestedFileName,
+            FileTypeChoices = new[]
+            {
+                new FilePickerFileType(fileTypeName) { Patterns = patterns.ToArray() },
+            },
+        });
+
+        return file?.TryGetLocalPath();
+    }
 }

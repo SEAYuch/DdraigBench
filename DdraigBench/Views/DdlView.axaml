@@ -1,0 +1,32 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:DdraigBench.ViewModels"
+        x:Class="DdraigBench.Views.DdlView"
+        x:DataType="vm:DdlViewModel"
+        Width="720" Height="480"
+        CanResize="True"
+        Title="{Binding Title}"
+        WindowStartupLocation="CenterOwner">
+
+    <DockPanel Margin="12" LastChildFill="True">
+        <TextBlock DockPanel.Dock="Top"
+                   Margin="0,0,0,8"
+                   Opacity="0.7"
+                   Text="Ctrl+A / Ctrl+C 可复制" />
+
+        <Button DockPanel.Dock="Bottom"
+                Content="关闭"
+                HorizontalAlignment="Right"
+                Margin="0,8,0,0"
+                Command="{Binding CloseCommand}" />
+
+        <TextBox Text="{Binding Ddl, Mode=OneWay}"
+                 IsReadOnly="True"
+                 AcceptsReturn="True"
+                 TextWrapping="NoWrap"
+                 FontFamily="Cascadia Code,Consolas,Menlo,Monospace"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+    </DockPanel>
+
+</Window>

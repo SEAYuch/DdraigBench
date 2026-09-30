@@ -21,10 +21,14 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             var window = new MainWindow();
+            var filePicker = new StorageProviderFilePicker(window);
             window.DataContext = new MainViewModel(
-                new StorageProviderFilePicker(window),
+                new ConnectionDialog(() => window, new FreeSqlConnectionTester()),
                 new FreeSqlFactory(),
-                new FreeSqlMetadataExplorer());
+                new FreeSqlMetadataExplorer(),
+                filePicker,
+                new ExportDialog(() => window, filePicker),
+                new DdlViewer(() => window));
 
             desktop.MainWindow = window;
         }
