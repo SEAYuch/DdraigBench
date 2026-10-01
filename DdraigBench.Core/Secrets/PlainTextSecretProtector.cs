@@ -10,17 +10,17 @@ public sealed class PlainTextSecretProtector : ISecretProtector
 
     public bool IsEncrypted => false;
 
-    public string Protect(string plainText)
+    public ValueTask<string> ProtectAsync(string plainText, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plainText);
-        return Prefix + plainText;
+        return ValueTask.FromResult(Prefix + plainText);
     }
 
-    public string Unprotect(string protectedText)
+    public ValueTask<string> UnprotectAsync(string protectedText, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(protectedText);
-        return protectedText.StartsWith(Prefix, StringComparison.Ordinal)
+        return ValueTask.FromResult(protectedText.StartsWith(Prefix, StringComparison.Ordinal)
             ? protectedText[Prefix.Length..]
-            : protectedText;
+            : protectedText);
     }
 }

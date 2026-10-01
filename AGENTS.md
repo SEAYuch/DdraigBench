@@ -131,6 +131,33 @@ Provider 的驱动版本被 FreeSql 钉死，上游不动则无法升级：
 
 > §8 要求"引入前先验证与 Avalonia 12.1 兼容版本"，本节即该核查结果。
 
+### 2.8 口令/密钥库包（M4-4 Linux 落地，2026-10-01 nuspec/源码实查）
+
+存放连接串口令的主密钥需要系统密钥库；三平台各有一条路：
+
+| 平台 | 机制 | 实现 | 依赖 |
+|---|---|---|---|
+| Windows | DPAPI（CurrentUser） | `DpapiSecretProtector` | ✅ 已有 `System.Security.Cryptography.ProtectedData` 10.0.12（MIT） |
+| Linux/FreeBSD | freedesktop Secret Service（gnome-keyring / KWallet） | `SecretServiceSecretProtector` + `SecretServiceKeyProvider` | ✅ 新增 `Ace4896.DBus.Services.Secrets` 1.6.0（MIT） |
+| macOS | Keychain | **未实现**（本机为 Linux，无法实测） | 待办 |
+
+考查过的 Secret Service 访问方式：
+
+| 方案 | 版本 | 许可证 | 编程模型 | 判定 |
+|---|---|---|---|---|
+| **Ace4896.DBus.Services.Secrets**（`DBus.Services.Secrets`） | 1.6.0 | MIT（nuspec 实查） | 托管，异步，**API 极薄**（Connect/默认集合/CreateItem/GetSecret） | ✅ **采用**。tfm 有 net6.0/net8.0/**net10.0** 资产；传递依赖 `Tmds.DBus.Protocol`（MIT）。**无原生库依赖** |
+| Tmds.DBus.Protocol（直连） | 0.9x | MIT | 托管，需自行实现 Secret Service 协议（约 200–400 行） | 备选：只引一个更主流可信的包，代价是自写底层 |
+| libsecret（`secret-tool` / C 库 P/Invoke） | — | LGPL-2.1（库本身） | **同步**；需 `libsecret-1.so.0`，GError/GLib 互操作复杂 | ❌ 不采用（引入 GPL/LGPL 家族库风险 + 原生依赖 + 互操作脆弱） |
+| GnomeStack.Os.Secrets / OutWit.* / SyntaxCircus.* | 0.1.x / 1.0.0 | 多未标注或非 MIT | 同样包 libsecret 或自建 | ❌ 不采用（许可证不明确、维护者小众、功能过剩） |
+
+**决策与硬性规则**：
+
+1. **只有 `Ace4896.DBus.Services.Secrets` 可进 Core**；不得再引第二套 D-Bus/密钥库库。若日后要换实现，先更新本节并跑通 §7 的密钥库集成测试。
+2. **信封加密**（`SecretKeyEnvelope`）：密钥库只存**一把 32 字节主密钥**，连接串用 **AES-256-GCM** 加密后留在 JSON 文件——避免每连接一个密钥库条目（重命名/删除会留孤儿），且文件自描述、易备份。
+3. 主密钥由 `SecretServiceKeyProvider` 以 D-Bus **DH 会话**（`EncryptionType.Dh`）存取，绝不走明文会话。
+4. **无密钥库即回退明文**（`PlainTextSecretProtector`，`IsEncrypted=false`）——服务器/容器/CI 无会话总线时不得崩，交 UI 告警。
+5. **不得擅自 chmod 既有目录**：`ConnectionStore` 只在"本次新建目录"时收紧到 0700（配置路径可能落在 `/tmp`、`~` 上，见 §4 实测）。
+
 ---
 
 ## 3. 工程结构
@@ -164,10 +191,14 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 │   │   ├── FreeSqlFactory.cs          # ConnectionProfile → IFreeSql（每连接单例，M1-3 已落地）
 │   │   └── IConnectionTester.cs / FreeSqlConnectionTester.cs      # 连接测试（M2-b）
 │   ├── Secrets/
-│   │   ├── ISecretProtector.cs        # Protect/Unprotect 抽象（含 IsEncrypted 供 UI 告警）（M4-4）
+│   │   ├── ISecretProtector.cs        # 异步 Protect/Unprotect 抽象（含 IsEncrypted 供 UI 告警）（M4-4）
 │   │   ├── DpapiSecretProtector.cs    # Windows DPAPI（CurrentUser 作用域）（M4-4）
 │   │   ├── PlainTextSecretProtector.cs # 回退明文（前缀 plain:，供读旧文件/无密钥库平台）
-│   │   └── SecretProtectors.cs        # 按平台选实现 / 按文件记录名取历史实现
+│   │   ├── IMasterKeyProvider.cs      # 主密钥存取抽象（M4-4 Linux）
+│   │   ├── SecretServiceKeyProvider.cs # 主密钥存 freedesktop Secret Service（gnome-keyring/KWallet，M4-4 Linux）
+│   │   ├── SecretServiceSecretProtector.cs # Linux/FreeBSD 保护器：keyring 主密钥 + AES-GCM 信封（M4-4 Linux）
+│   │   ├── SecretKeyEnvelope.cs       # AES-256-GCM 信封加解密（纯逻辑，internal，可单测）
+│   │   └── SecretProtectors.cs        # CreateDefaultAsync 按平台探测 / CreateByName 取历史实现
 │   ├── Sessions/
 │   │   ├── DbSession.cs              # 一个打开的连接标签 = 一个会话（M1-4 已落地）
 │   │   ├── ConnectionLease.cs        # MasterPool 取还句柄（M1-4 已落地）
@@ -241,6 +272,12 @@ public sealed class DbSession : IAsyncDisposable
 - **M2 实测结论（2026-09-18）**：`Ado.MasterPool.Get()` **会真正打开连接**（FreeSql 自带的 `DbConnectionStringPool.Get` 内部调用 `DbConnection.Open()`）——故不能用"取连接看类型"做离线断言；GPL 驱动校验改为**程序集加载探测**（`Assembly.Load("MySqlConnector")` 成功、`MySql.Data` 失败）。多方言集成测试在探测不可达时 `Assert.Skip`。
 - **M3-2 事务实现（2026-09-18）**：事务态挂在 `QueryTabViewModel`（**每标签独立**）——`BeginTransactionAsync()` 用 `DbSession.LeaseRawAsync()` 持有**一条**连接并 `BeginTransaction`；执行时把该 `DbTransaction` 传给 `QueryRunner.ExecuteAsync(..., transaction:)`，SQL 便跑在事务那条连接上（**不走池路径**）；`Commit`/`Rollback`/标签处置都会归还租约。注意：`Cancel()` 只中断客户端读取，**不会**提交或回滚事务。
 - **M1 实测结论（2026-09-18，SQLite）**：`IDbFirst.GetDatabases()` 返回 `[main]`；`GetTablesByDatabase("main")` 同时含表与视图，`DbTableInfo.Type` 为 `FreeSql.DatabaseModel.DbTableType.TABLE/VIEW`，`Schema` 为空串。故 SQLite 的"库→表→列"可直接映射、无需特判；`GetObjectsAsync` 目前仅实现 Table/View，其余 kind 抛 `NotSupportedException`。单测见 `DdraigBench.Test/MetadataExplorerTests.cs`。
+- **M4-4 密钥库实测结论（2026-10-01，Linux + gnome-keyring）**：
+  - `Ace4896.DBus.Services.Secrets` 的 `SecretService.SearchItemsAsync` 返回 **(unlocked, locked) 元组**，而 `Collection.SearchItemsAsync` 返回 `Item[]`——搜索"本应用的主密钥条目"要用前者并取元组两半；`Item.GetSecretAsync()` 会自动解锁条目。
+  - `Collection.CreateItemAsync(..., replace: true)` 在"同属性条目已存在"时替换而非新增（幂等），故主密钥创建可安全重试；条目属性 `application=<本应用/测试作用域>, purpose=master-key`。
+  - 密钥环**锁定或提示被取消**时 `CreateItemAsync`/`GetSecretAsync` 会返回 null 或抛异常 → `IsAvailableAsync` 统一吞成 `false`，由工厂回退明文，**不得让启动崩掉**。
+  - **`File.SetUnixFileMode` 作用于既有目录时**：非属主会抛 `UnauthorizedAccessException`（如 `/tmp` 属 root）→ `ConnectionStore` 只在"本次新建目录"时收紧 0700，并对权限失败一律吞掉不阻断落盘；回归测试 `Existing_directory_permissions_are_left_untouched` 守着这条线。
+  - `Path.GetFileName` 在 Linux 上**不把 `\` 当分隔符**（既有 `ConnectionStringBuilder.SuggestName` 因此对 Windows 路径失效）——已改为把两种分隔符归一化后取名。
 
 ---
 
@@ -293,6 +330,7 @@ public sealed class DbSession : IAsyncDisposable
 | Core.Services | xunit 单测；DB 依赖用 **SQLite 临时文件**（`Path.GetTempFileName` 建库），不 mock IFreeSql（集成式更真） |
 | GPL 防回归 | 静态断言（任何 `*.csproj` 不含 `FreeSql.All` / `FreeSql.Provider.MySql` / `MySql.Data`；输出目录无对应 dll）+ **驱动集真测试**：`Assembly.Load("MySqlConnector")` 成功、`MySql.Data` / `FreeSql.Provider.MySql` 失败，MySQL/PG 均可建出 `IFreeSql` 且 `Ado.DataType` 正确（`GplRegressionTests.cs`） |
 | 多方言集成 | 靶机连接串走环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`；未设置或 `Ado.ExecuteConnectTest()` 不可达即 `Assert.Skip`（无靶机时全绿）。**凭据不进仓库**（`MultiDialectIntegrationTests.cs`） |
+| 密钥库集成 | 真访问本机 freedesktop Secret Service（`SecretServiceKeyProviderTests.cs`）；**用唯一 `application` 属性隔离并结束即删**，不污染用户真实凭据；无会话总线/服务即 `Assert.Skip`。信封加密本身用**假主密钥**（`FakeMasterKeyProvider`）纯单测，CI 无密钥库也全绿 |
 | ViewModels | 纯逻辑测（不启 Avalonia）；测试工程 ProjectReference 壳工程；交互留到 Avalonia.Headless（M3 再引入） |
 | 交付门槛 | `dotnet build DdraigBench.slnx` 零警告零错误 + `dotnet test` 全绿，输出贴进交付说明 |
 
@@ -330,7 +368,17 @@ M4 进度（2026-09-18，切片进行中）：
 - **M4-1 ISqlDialect 落地 ✅**：`ISqlDialect`（`QuoteIdentifier` / `BuildPaging` / `FormatLiteral`）+ `SqlDialectBase` + SQLite/MySQL/PostgreSQL 三实现 + `SqlDialects` 工厂。分页统一 `LIMIT n OFFSET m`（三方言均支持）；字面量含字符串转义（`''`）、日期、布尔（`TRUE/FALSE`）、二进制（PG 用 `'\x..'::bytea`，SQLite/MySQL 用 `X'..'`）。测试 73 个全绿（无靶机时 2 跳过）。
 - **M4-2 导出 CSV / INSERT ✅**：`Core/Exporting/ResultExporter.cs` 纯逻辑（`ToCsv` 含分隔符/引号/换行转义与 null 空字段；`ToInsert` 标识符引用与字面量全交给 `ISqlDialect`，支持 `batchSize` 合并多行、空列名补 `columnN`）。壳层：`IFilePicker` 加 `PickSaveFileAsync`（StorageProvider 实现）+ `IExportDialog`/`ExportDialog`（保存路径 + INSERT 目标表名）+ `ExportDialogViewModel`（纯逻辑）+ `ExportDialogView.axaml`；`QueryTabViewModel` 增 `ExportCsvCommand`/`ExportInsertCommand` 与 `CanExport`（有列有行才可导），CSV 落盘**带 UTF-8 BOM**（Excel 友好）、INSERT 脚本**不带 BOM**；工具栏加两个按钮。INSERT 前先校验方言（`SqlDialects.TryGet`）——不支持则直接报状态、不弹对话框。测试 88 个全绿（无靶机时 2 跳过）。
 - **M4-3 DDL 预览 ✅**：Core `Metadata/DdlGenerator.cs`（吃 FreeSql `DbTableInfo` → `CREATE TABLE` + `CREATE [UNIQUE] INDEX`，含列注释/DEFAULT/复合主键 `PK_<表>`/外键；**单列自增主键内联**——顺序方言不同，故 `ISqlDialect` 加 `IdentityClause` + `BuildIdentityColumn`（SQLite `PRIMARY KEY AUTOINCREMENT` / MySQL `NOT NULL AUTO_INCREMENT PRIMARY KEY` / PG `GENERATED BY DEFAULT AS IDENTITY`）；`sqlite_` 内部自动索引跳过（不可显式创建）；视图只给提示+列结构）。`IMetadataExplorer.GetDdlAsync` 串起取元数据+选方言。壳层：`IDdlViewer`/`DdlViewer` + `DdlView.axaml`（只读 TextBox，Ctrl+A/C 可复制）；树节点带 `Database`，`MainViewModel.SelectedNode` + `PreviewDdlCommand`/`CanPreviewDdl`，工具栏加「预览 DDL」。测试 97 个全绿（无靶机时 2 跳过），含**真实 SQLite 往返**（生成 DDL → DROP → 重新执行成功）。已知缺口见 §6.2。
-- **M4-4 连接凭据加密存储（部分完成）**：`Core/Secrets/ISecretProtector`（`Name`/`IsEncrypted`/`Protect`/`Unprotect`）+ `DpapiSecretProtector`（`System.Security.Cryptography.ProtectedData` 10.0.12，**CurrentUser 作用域** + 固定 entropy）+ `PlainTextSecretProtector`（`plain:` 前缀，供无密钥库平台与读旧文件）+ `SecretProtectors` 工厂（`CreateDefault` / `CreateByName`）；`Core/Connections/ConnectionStore.cs`：camelCase JSON（`version`/`protector`/`connections`），**只加密连接串**、名称与方言明文便于列表展示，**先写 `.tmp` 再 `File.Move` 覆盖**（避免半截文件），文件缺失返回空清单。**明文文件在升级到 DPAPI 后仍可读**（按文件里的 `protector` 字段取实现），未知 `protector` 值直接报明确错误。测试 103 个全绿（无靶机时 2 跳过），含**真落盘断言：DPAPI 落盘后文件里搜不到 `s3cret-pw` 与 `Server=db`**。**未完成：Linux Secret Service(libsecret) / macOS Keychain 两个实现（本开发机为 Windows，无法实测）**，当前非 Windows 平台走明文回退（`IsEncrypted=false`，UI 须告警）。
+- **M4-4 连接凭据加密存储（Windows + Linux 完成）**：
+  - **抽象**：`Core/Secrets/ISecretProtector`——`Name` / `IsEncrypted` / **`ProtectAsync` / `UnprotectAsync`**（`ValueTask<string>` + `CancellationToken`）。**接口为异步**，因 Linux 经 D-Bus 访问密钥库天然异步；DPAPI/明文实现用 `ValueTask.FromResult` 包装。
+  - **Windows**：`DpapiSecretProtector`（`System.Security.Cryptography.ProtectedData` 10.0.12，**CurrentUser 作用域** + 固定 entropy）。
+  - **Linux/FreeBSD**：`SecretServiceKeyProvider`（主密钥存 freedesktop Secret Service，D-Bus **DH 会话**，属主属性 `application=DdraigBench, purpose=master-key`，内存缓存 + `SemaphoreSlim` 防并发重复创建）+ `SecretServiceSecretProtector`（`Name="freedesktop-secret-service"`）+ **`SecretKeyEnvelope`**（AES-256-GCM，格式 `[版本:1][nonce:12][标签:16][密文]` → Base64；`internal` + `InternalsVisibleTo("DdraigBench.Test")`）。
+  - **回退**：`PlainTextSecretProtector`（`plain:` 前缀）；工厂 `SecretProtectors.CreateDefaultAsync`（Windows→DPAPI；Linux/FreeBSD 探测密钥库可用→keyring；否则明文回退）+ `CreateByName`（读历史文件，含 `freedesktop-secret-service`）。
+  - **存储**：`Core/Connections/ConnectionStore.cs` camelCase JSON（`version`/`protector`/`connections`），**只加密连接串**、名称与方言明文便于列表展示，**先写 `.tmp` 再 `File.Move` 覆盖**（避免半截文件），文件缺失返回空清单。**明文文件升级到 DPAPI/keyring 后仍可读**（按文件里的 `protector` 字段取实现），未知 `protector` 值直接报明确错误。
+  - **测试**：全量 **132 个（129 通过 / 3 跳过 / 0 失败）**——含 `SecretKeyEnvelopeTests`（13：往返/篡改/错钥/版本/截断）、`SecretServiceProtectorTests`（6，假主密钥，无密钥库依赖）、`SecretServiceKeyProviderTests`（5，**真 gnome-keyring 集成**，用唯一 `application` 属性隔离并在结束时删除，不污染真实凭据）、`ConnectionStoreTests`（11，含**信封加密落盘后文件里搜不到 `s3cret-pw`/`Server=db`**、`0600`/`0700` 权限、**既有目录权限不被擅改**的回归）。
+  - **未完成：macOS Keychain**（本机为 Linux，无法实测）。UI 接线（`CreateDefaultAsync` → `ConnectionStore` → 顶部告警条）仍未做：`ConnectionStore` 目前尚未接入壳工程。
+  - **踩坑（务必保留）**：① DotNet 的 **`Ace4896` 只暴露 `SecretService.SearchItemsAsync`（返回 `(unlocked, locked)` 元组）**，`Collection.SearchItemsAsync` 才返回 `Item[]`；② `Path.GetFileName` 在 Linux 上**不切 `\`**（既有 `SuggestName` 缺陷已修，改用手写分隔符归一化）；③ **`ConnectionStore` 曾误 chmod 配置文件的既有父目录**（`/tmp` 等）——改为**仅对本次新建目录**收紧权限（§2.8 规则 5）。
+
+- **依赖审计（M0 起累积）**：见 §2；M4-4 新增 `Ace4896.DBus.Services.Secrets 1.6.0`（MIT）与其传递依赖 `Tmds.DBus.Protocol`（MIT），均**无原生库依赖**。
 
 ---
 

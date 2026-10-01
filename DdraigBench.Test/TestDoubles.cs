@@ -1,5 +1,7 @@
 // DdraigBench — 测试替身（文件选择 / 导出对话框）
 
+using System.Security.Cryptography;
+using DdraigBench.Core.Secrets;
 using DdraigBench.Services;
 
 namespace DdraigBench.Test;
@@ -60,5 +62,24 @@ internal sealed class StubExportDialog(ExportTarget? target = null) : IExportDia
     {
         LastFormat = format;
         return Task.FromResult(Target);
+    }
+}
+
+/// <summary>
+/// 假的主密钥提供器：让信封加密逻辑可在无密钥库环境（CI / Windows）完整单测。
+/// 传入固定 <paramref name="key"/> 可模拟"换了密钥"或"密钥损坏"。
+/// </summary>
+internal sealed class FakeMasterKeyProvider(byte[]? key = null) : IMasterKeyProvider
+{
+    public byte[] Key { get; } = key ?? RandomNumberGenerator.GetBytes(SecretKeyEnvelope.KeyLength);
+
+    public int CallCount { get; private set; }
+
+    public string Name => "fake-keyring";
+
+    public ValueTask<byte[]> GetOrCreateMasterKeyAsync(CancellationToken cancellationToken = default)
+    {
+        CallCount++;
+        return ValueTask.FromResult(Key);
     }
 }

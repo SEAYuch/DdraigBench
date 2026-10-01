@@ -12,5 +12,14 @@
         <PackageReference Include="FreeSql.Provider.PostgreSQL" Version="3.5.311" />
         <!-- M4-4：Windows DPAPI 口令保护（MIT / dotnet-runtime；仅 Windows 生效，其他平台见 SecretProtectors 回退） -->
         <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
+        <!-- M4-4：Linux/Unix freedesktop Secret Service（gnome-keyring / KWallet）托管 D-Bus 绑定。
+             MIT（nuspec 实查），tfm net6.0 → 兼容 net10.0；传递依赖 Tmds.DBus.Protocol（MIT）。
+             仅在 Linux 生效，探测不可达时回退明文（见 SecretProtectors）。 -->
+        <PackageReference Include="Ace4896.DBus.Services.Secrets" Version="1.6.0" />
+    </ItemGroup>
+
+    <!-- 测试工程需要直接单测内部纯逻辑（SecretKeyEnvelope 等） -->
+    <ItemGroup>
+        <InternalsVisibleTo Include="DdraigBench.Test" />
     </ItemGroup>
 </Project>

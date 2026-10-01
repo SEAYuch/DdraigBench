@@ -17,7 +17,7 @@ public sealed class DpapiSecretProtector : ISecretProtector
 
     public bool IsEncrypted => true;
 
-    public string Protect(string plainText)
+    public ValueTask<string> ProtectAsync(string plainText, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plainText);
 
@@ -28,10 +28,10 @@ public sealed class DpapiSecretProtector : ISecretProtector
 
         var data = ProtectedData.Protect(
             Encoding.UTF8.GetBytes(plainText), Entropy, DataProtectionScope.CurrentUser);
-        return Convert.ToBase64String(data);
+        return ValueTask.FromResult(Convert.ToBase64String(data));
     }
 
-    public string Unprotect(string protectedText)
+    public ValueTask<string> UnprotectAsync(string protectedText, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(protectedText);
 
@@ -42,6 +42,6 @@ public sealed class DpapiSecretProtector : ISecretProtector
 
         var data = ProtectedData.Unprotect(
             Convert.FromBase64String(protectedText), Entropy, DataProtectionScope.CurrentUser);
-        return Encoding.UTF8.GetString(data);
+        return ValueTask.FromResult(Encoding.UTF8.GetString(data));
     }
 }

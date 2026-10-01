@@ -28,7 +28,12 @@ public static class ConnectionStringBuilder
 
     public static string SuggestName(ConnectionParameters p) => p.DataType switch
     {
-        DataType.Sqlite => Path.GetFileName(p.FilePath ?? string.Empty),
+        // 用户可能粘贴任一平台的路径（Windows 反斜杠 / Unix 斜杠），故两种分隔符都要切；
+        // 仅用 Path.GetFileName 会因平台差异漏切另一种分隔符。
+        DataType.Sqlite => FileNameOf(p.FilePath ?? string.Empty),
         _ => $"{p.User}@{p.Host}/{p.Database}",
     };
+
+    private static string FileNameOf(string path) =>
+        Path.GetFileName(path.Replace('\\', Path.DirectorySeparatorChar));
 }

@@ -89,6 +89,127 @@ public sealed class ConnectionStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Round_trip_with_keyring_envelope_hides_password_in_file()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsFreeBSD())
+        {
+            Assert.Skip("信封保护器仅 Linux/FreeBSD 可用");
+            return;
+        }
+
+        var protector = new SecretServiceSecretProtector(new FakeMasterKeyProvider());
+        var store = new ConnectionStore(_filePath, protector);
+
+        await store.SaveAsync(_profiles);
+        var loaded = await store.LoadAsync();
+
+        Assert.Equal(_profiles, loaded);
+        Assert.True(protector.IsEncrypted);
+
+        var json = await File.ReadAllTextAsync(_filePath);
+        Assert.DoesNotContain("s3cret-pw", json);
+        Assert.DoesNotContain("Server=db", json);
+        Assert.Contains("freedesktop-secret-service", json);
+        Assert.Contains("\"Sqlite\"", json); // 名称与方言仍明文，便于列表展示
+    }
+
+    [Fact]
+    public async Task Plaintext_file_still_loads_after_upgrading_to_keyring_envelope()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsFreeBSD())
+        {
+            Assert.Skip("信封保护器仅 Linux/FreeBSD 可用");
+            return;
+        }
+
+        await new ConnectionStore(_filePath, new PlainTextSecretProtector()).SaveAsync(_profiles);
+
+        var upgraded = new ConnectionStore(_filePath, new SecretServiceSecretProtector(new FakeMasterKeyProvider()));
+        var loaded = await upgraded.LoadAsync();
+
+        Assert.Equal(_profiles, loaded);
+
+        // 再存一次即完成迁移：文件里只剩密文。
+        await upgraded.SaveAsync(loaded);
+        var json = await File.ReadAllTextAsync(_filePath);
+        Assert.DoesNotContain("s3cret-pw", json);
+        Assert.Contains("freedesktop-secret-service", json);
+    }
+
+    [Fact]
+    public async Task Saved_file_is_owner_only_on_unix()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var store = new ConnectionStore(_filePath, new PlainTextSecretProtector());
+        await store.SaveAsync(_profiles);
+
+        var mode = File.GetUnixFileMode(_filePath);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
+    }
+
+    [Fact]
+    public async Task Existing_directory_permissions_are_left_untouched()
+    {
+        // 回归：配置路径可能落在 /tmp 等既有目录上，绝不能擅自 chmod（曾误改，非属主时 EPERM 崩溃）。
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var directory = Path.Combine(Path.GetTempPath(), $"ddraigbench_dir_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
+        var expected = File.GetUnixFileMode(directory);
+
+        try
+        {
+            var filePath = Path.Combine(directory, "connections.json");
+            await new ConnectionStore(filePath, new PlainTextSecretProtector()).SaveAsync(_profiles);
+
+            Assert.Equal(expected, File.GetUnixFileMode(directory));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Saved_directory_is_owner_only_on_unix()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var directory = Path.Combine(Path.GetTempPath(), $"ddraigbench_{Guid.NewGuid():N}");
+        var filePath = Path.Combine(directory, "connections.json");
+        try
+        {
+            await new ConnectionStore(filePath, new PlainTextSecretProtector()).SaveAsync(_profiles);
+
+            var mode = File.GetUnixFileMode(directory);
+
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+                mode);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Unknown_protector_name_is_reported()
     {
         await File.WriteAllTextAsync(_filePath, """

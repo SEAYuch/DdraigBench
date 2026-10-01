@@ -57,6 +57,8 @@
 | FreeSql（方言引擎 + 元数据引擎） | 3.5.311 | MIT |
 | FreeSql.Provider.Sqlite / MySqlConnector / PostgreSQL | 3.5.311 | MIT |
 | System.Security.Cryptography.ProtectedData | 10.0.12 | MIT |
+| Ace4896.DBus.Services.Secrets（freedesktop Secret Service 托管 D-Bus 绑定） | 1.6.0 | MIT |
+| Tmds.DBus.Protocol（上者的传递依赖，无原生库） | 0.9x | MIT |
 | xunit.v3 / Test.Sdk / coverlet | 4.0.1 / 18.10.1 / 10.0.1 | Apache-2.0 / MIT |
 
 > 依赖许可证均经 NuGet nuspec 实查。**红线：任何位置不得引入 GPL 依赖**（尤其是 `FreeSql.All` / `FreeSql.Provider.MySql` / `MySql.Data`）——仓库内有防回归测试守着这条线。
@@ -102,6 +104,7 @@ dotnet run   --project DdraigBench                # 启动应用
 - **Core 逻辑** → xunit 单测；数据库依赖一律用**临时 SQLite 文件**（不 mock `IFreeSql`，走真连接）
 - **GPL 防回归** → 静态断言 + 程序集加载探测（`MySqlConnector` 必须可加载，`MySql.Data` / `FreeSql.Provider.MySql` 必须加载失败）
 - **多方言集成** → 读环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`；未设置或不可达即 `Assert.Skip`（**凭据不进仓库**）
+- **密钥库集成** → 真访问本机 freedesktop Secret Service；用唯一 `application` 属性隔离并结束即删，**不污染真实凭据**；无会话总线即 `Assert.Skip`。信封加密本身用假主密钥纯单测，**CI 无密钥库也全绿**
 - **ViewModel** → 纯逻辑测，不启 Avalonia
 - **控件级** → `Avalonia.Headless` + xUnit v3 `AssemblyFixture`（覆盖结果网格动态列）
 
@@ -110,12 +113,13 @@ dotnet run   --project DdraigBench                # 启动应用
 诚实列出当前**未做 / 未实测**的部分：
 
 1. **SQL Server 挂起**——无靶机，故不装 `FreeSql.Provider.SqlServer`、也不进连接对话框（避免未实测代码入库）。
-2. **非 Windows 平台的密钥库未实现**——Linux Secret Service(libsecret) / macOS Keychain 尚未接入；当前非 Windows 走明文回退（`ISecretProtector.IsEncrypted == false`，UI 须告警）。
-3. **需要 UI 线程的控件无法在测试里构造**——如 `TextEditor`；`HeadlessUnitTestSession` 在 MTP + fixture 组合下实测挂死。动态列等不触碰 Dispatcher 的控件已纳入 headless 回归。
-4. **元数据缺口**（`IDbFirst` 不提供，需按方言查 catalog）：**视图定义、触发器、函数、事件、分区**；SQLite 的 `AUTOINCREMENT` 也无法从声明类型识别（故 DDL 预览会退化成 `INTEGER PRIMARY KEY`）。
-5. **真·服务端分页未接线**——`ISqlDialect.BuildPaging` 已就绪，但尚未把用户 SQL 包进分页查询（当前是客户端行数上限 + 网格虚拟化）。
-6. **UI 视觉验收为人工项**——开发环境无显示器，截图未入库。
-7. `ReactiveUI.Avalonia.Autofac` 是未接线的死重（默认走构造函数注入），属待清理项。
+2. **macOS Keychain 未实现**——Windows 用 DPAPI、Linux/FreeBSD 用 freedesktop Secret Service（gnome-keyring / KWallet，经托管 D-Bus）均**已落地**；macOS 尚无实现（开发机为 Linux，无法实测），该平台会走明文回退（`ISecretProtector.IsEncrypted == false`，UI 须告警）。
+3. **连接清单的 UI 接线未做**——`ConnectionStore` / `SecretProtectors.CreateDefaultAsync` 目前尚未接入壳工程（启动不读/不写连接清单）；无密钥库时的"明文回退"顶部告警条留待接线时一并落地。
+4. **需要 UI 线程的控件无法在测试里构造**——如 `TextEditor`；`HeadlessUnitTestSession` 在 MTP + fixture 组合下实测挂死。动态列等不触碰 Dispatcher 的控件已纳入 headless 回归。
+5. **元数据缺口**（`IDbFirst` 不提供，需按方言查 catalog）：**视图定义、触发器、函数、事件、分区**；SQLite 的 `AUTOINCREMENT` 也无法从声明类型识别（故 DDL 预览会退化成 `INTEGER PRIMARY KEY`）。
+6. **真·服务端分页未接线**——`ISqlDialect.BuildPaging` 已就绪，但尚未把用户 SQL 包进分页查询（当前是客户端行数上限 + 网格虚拟化）。
+7. **UI 视觉验收为人工项**——开发环境无显示器，截图未入库。
+8. `ReactiveUI.Avalonia.Autofac` 是未接线的死重（默认走构造函数注入），属待清理项。
 
 ## 路线图
 

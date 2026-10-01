@@ -57,7 +57,7 @@ public sealed class ConnectionStore(string filePath, ISecretProtector protector)
             profiles.Add(new ConnectionProfile(
                 stored.Name,
                 stored.DataType,
-                effective.Unprotect(stored.ProtectedConnectionString)));
+                await effective.UnprotectAsync(stored.ProtectedConnectionString, ct)));
         }
 
         return profiles;
@@ -67,24 +67,35 @@ public sealed class ConnectionStore(string filePath, ISecretProtector protector)
     {
         ArgumentNullException.ThrowIfNull(profiles);
 
+        var stored = new List<StoredConnection>(profiles.Count);
+        foreach (var profile in profiles)
+        {
+            stored.Add(new StoredConnection
+            {
+                Name = profile.Name,
+                DataType = profile.DataType,
+                ProtectedConnectionString = await Protector.ProtectAsync(profile.ConnectionString, ct),
+            });
+        }
+
         var file = new StoreFile
         {
             Version = CurrentVersion,
             Protector = Protector.Name,
-            Connections = profiles
-                .Select(p => new StoredConnection
-                {
-                    Name = p.Name,
-                    DataType = p.DataType,
-                    ProtectedConnectionString = Protector.Protect(p.ConnectionString),
-                })
-                .ToList(),
+            Connections = stored,
         };
 
         var directory = Path.GetDirectoryName(FilePath);
         if (!string.IsNullOrEmpty(directory))
         {
+            // 只对"本次新建"的目录收紧权限：配置路径可能落在 /tmp、~ 等既有目录上，
+            // 擅自 chmod 会破坏系统/家目录语义（非属主时还会直接 EPERM 失败）。
+            var createdDirectory = !Directory.Exists(directory);
             Directory.CreateDirectory(directory);
+            if (createdDirectory)
+            {
+                HardenUnixDirectory(directory);
+            }
         }
 
         // 先写临时文件再替换，避免中途崩溃留下半截配置
@@ -94,7 +105,48 @@ public sealed class ConnectionStore(string filePath, ISecretProtector protector)
             await JsonSerializer.SerializeAsync(stream, file, JsonOptions, ct);
         }
 
+        HardenUnixFile(temporary);
         File.Move(temporary, FilePath, overwrite: true);
+    }
+
+    /// <summary>
+    /// 非 Windows 平台把配置目录收紧到 0700：即便保护器是明文回退，也至少不给同机其他用户可读。
+    /// 系统不支持 Unix 文件模式时静默跳过（如 Windows / 某些容器文件系统）。
+    /// </summary>
+    private static void HardenUnixDirectory(string directory)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            File.SetUnixFileMode(
+                directory,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        catch (Exception ex) when (ex is PlatformNotSupportedException or IOException or UnauthorizedAccessException)
+        {
+            // 权限收紧失败不应阻断连接清单落盘（如文件系统不支持 Unix 权限位）。
+        }
+    }
+
+    /// <summary>非 Windows 平台把配置文件收紧到 0600（仅属主可读写）。</summary>
+    private static void HardenUnixFile(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        catch (Exception ex) when (ex is PlatformNotSupportedException or IOException or UnauthorizedAccessException)
+        {
+        }
     }
 
     private sealed class StoreFile
