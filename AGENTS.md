@@ -131,7 +131,7 @@ Provider 的驱动版本被 FreeSql 钉死，上游不动则无法升级：
 
 > §8 要求"引入前先验证与 Avalonia 12.1 兼容版本"，本节即该核查结果。
 
-### 2.8 口令/密钥库包（M4-4 Linux 落地，2026-10-01 nuspec/源码实查）
+### 2.8 口令/密钥库包（M4-4：2026-10-01 Linux 落地；2026-10-04 macOS 落地，均为实查）
 
 存放连接串口令的主密钥需要系统密钥库；三平台各有一条路：
 
@@ -139,7 +139,7 @@ Provider 的驱动版本被 FreeSql 钉死，上游不动则无法升级：
 |---|---|---|---|
 | Windows | DPAPI（CurrentUser） | `DpapiSecretProtector` | ✅ 已有 `System.Security.Cryptography.ProtectedData` 10.0.12（MIT） |
 | Linux/FreeBSD | freedesktop Secret Service（gnome-keyring / KWallet） | `SecretServiceSecretProtector` + `SecretServiceKeyProvider` | ✅ 新增 `Ace4896.DBus.Services.Secrets` 1.6.0（MIT） |
-| macOS | Keychain | **未实现**（本机为 Linux，无法实测） | 待办 |
+| macOS | Keychain（传统 login keychain，`kSecClassGenericPassword`） | `MacKeychainSecretProtector` + `MacKeychainKeyProvider` | ✅ **零新依赖**：自研 `Security.framework` / `CoreFoundation` P/Invoke（系统自带框架，无原生库拷贝、无许可证风险） |
 
 考查过的 Secret Service 访问方式：
 
@@ -150,13 +150,29 @@ Provider 的驱动版本被 FreeSql 钉死，上游不动则无法升级：
 | libsecret（`secret-tool` / C 库 P/Invoke） | — | LGPL-2.1（库本身） | **同步**；需 `libsecret-1.so.0`，GError/GLib 互操作复杂 | ❌ 不采用（引入 GPL/LGPL 家族库风险 + 原生依赖 + 互操作脆弱） |
 | GnomeStack.Os.Secrets / OutWit.* / SyntaxCircus.* | 0.1.x / 1.0.0 | 多未标注或非 MIT | 同样包 libsecret 或自建 | ❌ 不采用（许可证不明确、维护者小众、功能过剩） |
 
+考查过的 macOS Keychain 访问方式（NuGet `q=keychain+macos` 共 19 个命中，**无 Microsoft/dotnet 官方包**）：
+
+| 方案 | 版本 | 许可证 | 判定 |
+|---|---|---|---|
+| **自研 `Security.framework` P/Invoke**（`SecItemCopyMatching/Add/Update/Delete` + CF 字典） | — | 系统自带框架 | ✅ **采用**。零新依赖、API 面 4 个函数、键名常量由 `dlsym` 取自框架（不硬编码字面量） |
+| Latchkey | 0.1.0 | MIT（有 net10.0 资产） | ❌ 传递依赖 `CliWrap` 3.10.2、0.1.0 单维护者、1271 下载 |
+| GnomeStack.Os.Secrets / GnomeStack.Secrets.OperatingSystem | 0.1.3 / 0.1.6 | 未标注 | ❌ 小维护者、且走 libsecret |
+| ktsu.CredentialCache / OutWit.Shared.Secrets.Provider.MacOS / SyntaxCircus.Credentials / Keytar.Core | 1.3.x / 1.0.0 / 0.1.1 / 1.0.0 | 未标注 | ❌ 同一"小维护者 + 包 libsecret"模式 |
+| `security` CLI 子进程 | — | — | ❌ 每次加解密起进程、`-A` 放开 ACL、二进制 key 过命令行 |
+
 **决策与硬性规则**：
 
-1. **只有 `Ace4896.DBus.Services.Secrets` 可进 Core**；不得再引第二套 D-Bus/密钥库库。若日后要换实现，先更新本节并跑通 §7 的密钥库集成测试。
-2. **信封加密**（`SecretKeyEnvelope`）：密钥库只存**一把 32 字节主密钥**，连接串用 **AES-256-GCM** 加密后留在 JSON 文件——避免每连接一个密钥库条目（重命名/删除会留孤儿），且文件自描述、易备份。
+1. **只有 `Ace4896.DBus.Services.Secrets` 可进 Core**（Linux 路径）；macOS 只允许自研 P/Invoke，**不得引第三方钥匙库包**。若日后要换实现，先更新本节并跑通 §7 的密钥库集成测试。
+2. **信封加密**（`SecretKeyEnvelope`）：密钥库只存**一把 32 字节主密钥**，连接串用 **AES-256-GCM** 加密后留在 JSON 文件——避免每连接一个密钥库条目（重命名/删除会留孤儿），且文件自描述、易备份。Linux 与 macOS 的保护器共用抽象基类 `EnvelopeSecretProtector`（子���只给标识名 + 平台守卫）。
 3. 主密钥由 `SecretServiceKeyProvider` 以 D-Bus **DH 会话**（`EncryptionType.Dh`）存取，绝不走明文会话。
-4. **无密钥库即回退明文**（`PlainTextSecretProtector`，`IsEncrypted=false`）——服务器/容器/CI 无会话总线时不得崩，交 UI 告警。
+4. **无密钥库即回退明文**（`PlainTextSecretProtector`，`IsEncrypted=false`）——服务器/容器/CI 无会话总线时不得崩，交 UI 告警。macOS 侧的"不可用"判定见 §4 的 OSStatus 分类；探测用 `suppressUi: true` 实例，**正式使用才允许弹授权框**。
 5. **不得擅自 chmod 既有目录**：`ConnectionStore` 只在"本次新建目录"时收紧到 0700（配置路径可能落在 `/tmp`、`~` 上，见 §4 实测）。
+6. **macOS 附加规则**：
+   - 用**传统文件钥匙串**（login keychain）。**不设** `kSecAttrAccessible`（SDK 头 `SecItem.h:89` 明确：macOS 上仅当配 `kSecAttrSynchronizable` 或 `kSecUseDataProtectionKeychain` 才生效）；**不用**数据保护钥匙串（未签名构建会 `errSecMissingEntitlement` = -34018）。
+   - 条目标识沿用同一套：`service=DdraigBench`（= `SecretProtectors.ServiceName`）、`account=master-key`、`label="DdraigBench master key"`（与 freedesktop 的 `application=DdraigBench purpose=master-key` 对位），便于用户理解与手工清理。
+   - 保护器名 `"macos-keychain"`（写入 `connections.json` 的 `protector` 字段，`SecretProtectors.CreateByName` 认它）。
+   - `Core.csproj` 需 `<AllowUnsafeBlocks>true</AllowUnsafeBlocks>`：.NET 的 `[LibraryImport]` 源生成器要求（SYSLIB1062）。业务代码本身**不使用指针语法**（钉数组走 `GCHandle`），该开关只服务于 P/Invoke 桩。
+   - **授权/解锁类失败一律不静默重生成主密钥**：条目长度异常要抛 `CryptographicException`（否则旧连接串密文永久报废），授权类状态码抛 `KeychainUnavailableException`（供未来 UI 接线精确捕获后回退明文 + 告警）。
 
 ---
 
@@ -194,9 +210,14 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 │   │   ├── ISecretProtector.cs        # 异步 Protect/Unprotect 抽象（含 IsEncrypted 供 UI 告警）（M4-4）
 │   │   ├── DpapiSecretProtector.cs    # Windows DPAPI（CurrentUser 作用域）（M4-4）
 │   │   ├── PlainTextSecretProtector.cs # 回退明文（前缀 plain:，供读旧文件/无密钥库平台）
-│   │   ├── IMasterKeyProvider.cs      # 主密钥存取抽象（M4-4 Linux）
+│   │   ├── IMasterKeyProvider.cs      # 主密钥存取抽象（M4-4 Linux + macOS）
+│   │   ├── EnvelopeSecretProtector.cs # 信封保护器基类（主密钥 + AES-GCM；Linux/macOS 共用，M4-4）
 │   │   ├── SecretServiceKeyProvider.cs # 主密钥存 freedesktop Secret Service（gnome-keyring/KWallet，M4-4 Linux）
 │   │   ├── SecretServiceSecretProtector.cs # Linux/FreeBSD 保护器：keyring 主密钥 + AES-GCM 信封（M4-4 Linux）
+│   │   ├── MacKeychainKeyProvider.cs  # 主密钥存 macOS Keychain（Security.framework P/Invoke，M4-4 macOS）
+│   │   ├── MacKeychainSecretProtector.cs # macOS 保护器：钥匙串主密钥 + AES-GCM 信封（M4-4 macOS）
+│   │   ├── MacSecurityFramework.cs    # SecItem*/CoreFoundation P/Invoke（internal；键名走 dlsym）
+│   │   ├── KeychainUnavailableException.cs # 钥匙串不可用/未授权（供 UI 回退明文 + 告警）
 │   │   ├── SecretKeyEnvelope.cs       # AES-256-GCM 信封加解密（纯逻辑，internal，可单测）
 │   │   └── SecretProtectors.cs        # CreateDefaultAsync 按平台探测 / CreateByName 取历史实现
 │   ├── Sessions/
@@ -220,7 +241,7 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 └── DdraigBench.Test/            # Core 的全部单测/集成测（SQLite 黄金通道）
 ```
 
-**新建 Core 的 csproj 要点**：`net10.0` + `Nullable enable` + `ImplicitUsings enable` + 仅引用 `FreeSql` 与所选 Provider；**禁止引用任何 Avalonia.* / ReactiveUI.* / Splat**。
+**新建 Core 的 csproj 要点**：`net10.0` + `Nullable enable` + `ImplicitUsings enable` + 仅引用 `FreeSql` 与所选 Provider；**禁止引用任何 Avalonia.* / ReactiveUI.* / Splat**。（唯一附加开关：`<AllowUnsafeBlocks>true</AllowUnsafeBlocks>`，因 macOS 钥匙串的 `[LibraryImport]` 源生成器要求，见 §2.8 规则 6）
 
 > M1-1（2026-09-18）已落地：`DdraigBench.Core` 建成（仅 `FreeSql` + `FreeSql.Provider.Sqlite`）并加入 `DdraigBench.slnx`，主/测工程均已 ProjectReference 之。Core 内部各类文件随 M1-2..M1-5 逐个补齐。
 
@@ -278,6 +299,13 @@ public sealed class DbSession : IAsyncDisposable
   - 密钥环**锁定或提示被取消**时 `CreateItemAsync`/`GetSecretAsync` 会返回 null 或抛异常 → `IsAvailableAsync` 统一吞成 `false`，由工厂回退明文，**不得让启动崩掉**。
   - **`File.SetUnixFileMode` 作用于既有目录时**：非属主会抛 `UnauthorizedAccessException`（如 `/tmp` 属 root）→ `ConnectionStore` 只在"本次新建目录"时收紧 0700，并对权限失败一律吞掉不阻断落盘；回归测试 `Existing_directory_permissions_are_left_untouched` 守着这条线。
   - `Path.GetFileName` 在 Linux 上**不把 `\` 当分隔符**（既有 `ConnectionStringBuilder.SuggestName` 因此对 Windows 路径失效）——已改为把两种分隔符归一化后取名。
+- **M4-4 密钥库实测结论（2026-10-04，macOS 12.7.6 + Security.framework）**：
+  - **查询字典的键/值回调绝不可传 NULL**：`CFDictionaryCreate` 的 `keyCallBack`/`valueCallBack` 传 NULL 时，建出的字典**不 retain 键与值**；随后 `CFRelease` 那些 CFString/CFData 会让 `SecItem*` 读到野指针，表现为**永久卡死而非崩溃**（无任何报错，CI 里表现为测试挂住——本轮实际踩到，靠"二分查询字典 + `CFCFStringGetCString`/`CFGetTypeID` 自检"定位）。必须传 CoreFoundation 导出的 `kCFTypeDictionaryKeyCallBacks` / `kCFTypeDictionaryValueCallBacks`（取**结构体地址**）。
+  - **键名/类名常量不必硬编码，也查不到字面量**：`SecItem.h` 只声明 `extern const CFStringRef`（"class"/"genp"/"svce"/"v_Data" 等键值在任何公开头文件里都没有）。实查 `Security.framework.tbd` / `CoreFoundation.tbd` 确认这些符号**都导出**，故 `MacSecurityFramework` 一律 `dlsym` 取值：`kSecClass`、`kSecClassGenericPassword`、`kSecAttrService/Account/Label`、`kSecValueData`、`kSecMatchLimit(One)`、`kSecReturnData`、`kSecUseAuthenticationUI(Allow|Fail)`、`kCFBooleanTrue`（`CFBooleanCreate` 未导出，只能取常量；实测 `CFGetTypeID(kCFBooleanTrue)=21` = CFBoolean，`CFGetTypeID(CFString)=7`）。**dlsym 对数据符号返回变量地址，要再解引用一次**。
+  - OSStatus 实测：条目不存在 `errSecItemNotFound=-25300`、重复 `errSecDuplicateItem=-25299`、未授权 `-25293`、禁交互 `-25308`、缺授权组 `-34018`（见 §2.8 规则 6 的分类表）。
+  - `kSecUseAuthenticationUI=Fail`（= `kSecUseAuthenticationUIFail`，`SecItem.h:1066` 起 deprecated 但仍可用）能让"条目被 ACL 拦下"立刻失败而不是等授权框；**注意它只抑制条目授权、不抑制钥匙串解锁**，故钥匙串被锁时 SecItem 仍可能阻塞调用线程——壳工程接线时**必须在后台线程调用**。
+  - 本机 `security find/add/delete-generic-password` 与我们的 SecItem 实现**互为独立参照**：集成测试 `Item_is_discoverable_by_the_security_cli` 用 CLI 反查我们写入的条目（校验 service/account/label 真按系统常量落库，用户能在「钥匙串访问」里搜到并删除）。反过来，**不要用 `security add -U` 改写我们创建的条目**去模拟损坏——它会重建条目并换掉 ACL，随后 SecItem 返回值不可预期（实测得到 `errSecItemNotFound` 而非 DuplicateItem/AuthFailed）；造损坏条目要用我们自己的 `SecItemUpdate`。
+  - `kSecAttrAccessible` 在传统（文件）钥匙串上**不生效**（`SecItem.h:89`：macOS 上仅当配 `kSecAttrSynchronizable` 或 `kSecUseDataProtectionKeychain` 才生效），故不设；数据保护钥匙串则需要 keychain-access-groups 授权，未签名构建直接 `errSecMissingEntitlement`。
 
 ---
 
@@ -330,7 +358,7 @@ public sealed class DbSession : IAsyncDisposable
 | Core.Services | xunit 单测；DB 依赖用 **SQLite 临时文件**（`Path.GetTempFileName` 建库），不 mock IFreeSql（集成式更真） |
 | GPL 防回归 | 静态断言（任何 `*.csproj` 不含 `FreeSql.All` / `FreeSql.Provider.MySql` / `MySql.Data`；输出目录无对应 dll）+ **驱动集真测试**：`Assembly.Load("MySqlConnector")` 成功、`MySql.Data` / `FreeSql.Provider.MySql` 失败，MySQL/PG 均可建出 `IFreeSql` 且 `Ado.DataType` 正确（`GplRegressionTests.cs`） |
 | 多方言集成 | 靶机连接串走环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`；未设置或 `Ado.ExecuteConnectTest()` 不可达即 `Assert.Skip`（无靶机时全绿）。**凭据不进仓库**（`MultiDialectIntegrationTests.cs`） |
-| 密钥库集成 | 真访问本机 freedesktop Secret Service（`SecretServiceKeyProviderTests.cs`）；**用唯一 `application` 属性隔离并结束即删**，不污染用户真实凭据；无会话总线/服务即 `Assert.Skip`。信封加密本身用**假主密钥**（`FakeMasterKeyProvider`）纯单测，CI 无密钥库也全绿 |
+| 密钥库集成 | **Linux**：真访问本机 freedesktop Secret Service（`SecretServiceKeyProviderTests.cs`），**用唯一 `application` 属性隔离并结束即删**，不污染用户真实凭据；无会话总线/服务即 `Assert.Skip`。**macOS**：真访问 login keychain（`MacKeychainKeyProviderTests.cs`），唯一 `service` 隔离 + `suppressUi`（禁授权框）+ 结束即删；非 macOS `Assert.Skip`。信封加密本身一律用**假主密钥**（`FakeMasterKeyProvider`）纯单测，CI 无密钥库也全绿 |
 | ViewModels | 纯逻辑测（不启 Avalonia）；测试工程 ProjectReference 壳工程；交互留到 Avalonia.Headless（M3 再引入） |
 | 交付门槛 | `dotnet build DdraigBench.slnx` 零警告零错误 + `dotnet test` 全绿，输出贴进交付说明 |
 
@@ -368,17 +396,19 @@ M4 进度（2026-09-18，切片进行中）：
 - **M4-1 ISqlDialect 落地 ✅**：`ISqlDialect`（`QuoteIdentifier` / `BuildPaging` / `FormatLiteral`）+ `SqlDialectBase` + SQLite/MySQL/PostgreSQL 三实现 + `SqlDialects` 工厂。分页统一 `LIMIT n OFFSET m`（三方言均支持）；字面量含字符串转义（`''`）、日期、布尔（`TRUE/FALSE`）、二进制（PG 用 `'\x..'::bytea`，SQLite/MySQL 用 `X'..'`）。测试 73 个全绿（无靶机时 2 跳过）。
 - **M4-2 导出 CSV / INSERT ✅**：`Core/Exporting/ResultExporter.cs` 纯逻辑（`ToCsv` 含分隔符/引号/换行转义与 null 空字段；`ToInsert` 标识符引用与字面量全交给 `ISqlDialect`，支持 `batchSize` 合并多行、空列名补 `columnN`）。壳层：`IFilePicker` 加 `PickSaveFileAsync`（StorageProvider 实现）+ `IExportDialog`/`ExportDialog`（保存路径 + INSERT 目标表名）+ `ExportDialogViewModel`（纯逻辑）+ `ExportDialogView.axaml`；`QueryTabViewModel` 增 `ExportCsvCommand`/`ExportInsertCommand` 与 `CanExport`（有列有行才可导），CSV 落盘**带 UTF-8 BOM**（Excel 友好）、INSERT 脚本**不带 BOM**；工具栏加两个按钮。INSERT 前先校验方言（`SqlDialects.TryGet`）——不支持则直接报状态、不弹对话框。测试 88 个全绿（无靶机时 2 跳过）。
 - **M4-3 DDL 预览 ✅**：Core `Metadata/DdlGenerator.cs`（吃 FreeSql `DbTableInfo` → `CREATE TABLE` + `CREATE [UNIQUE] INDEX`，含列注释/DEFAULT/复合主键 `PK_<表>`/外键；**单列自增主键内联**——顺序方言不同，故 `ISqlDialect` 加 `IdentityClause` + `BuildIdentityColumn`（SQLite `PRIMARY KEY AUTOINCREMENT` / MySQL `NOT NULL AUTO_INCREMENT PRIMARY KEY` / PG `GENERATED BY DEFAULT AS IDENTITY`）；`sqlite_` 内部自动索引跳过（不可显式创建）；视图只给提示+列结构）。`IMetadataExplorer.GetDdlAsync` 串起取元数据+选方言。壳层：`IDdlViewer`/`DdlViewer` + `DdlView.axaml`（只读 TextBox，Ctrl+A/C 可复制）；树节点带 `Database`，`MainViewModel.SelectedNode` + `PreviewDdlCommand`/`CanPreviewDdl`，工具栏加「预览 DDL」。测试 97 个全绿（无靶机时 2 跳过），含**真实 SQLite 往返**（生成 DDL → DROP → 重新执行成功）。已知缺口见 §6.2。
-- **M4-4 连接凭据加密存储（Windows + Linux 完成）**：
+- **M4-4 连接凭据加密存储（Windows + Linux + macOS 全部完成）**：
   - **抽象**：`Core/Secrets/ISecretProtector`——`Name` / `IsEncrypted` / **`ProtectAsync` / `UnprotectAsync`**（`ValueTask<string>` + `CancellationToken`）。**接口为异步**，因 Linux 经 D-Bus 访问密钥库天然异步；DPAPI/明文实现用 `ValueTask.FromResult` 包装。
+  - **公共基类**：`EnvelopeSecretProtector`（主密钥 + AES-256-GCM 的共用实现；子类只给 `Name` / `IsEncrypted` / 平台守卫），Linux 与 macOS 两个保护器各只剩 ~15 行。
   - **Windows**：`DpapiSecretProtector`（`System.Security.Cryptography.ProtectedData` 10.0.12，**CurrentUser 作用域** + 固定 entropy）。
   - **Linux/FreeBSD**：`SecretServiceKeyProvider`（主密钥存 freedesktop Secret Service，D-Bus **DH 会话**，属主属性 `application=DdraigBench, purpose=master-key`，内存缓存 + `SemaphoreSlim` 防并发重复创建）+ `SecretServiceSecretProtector`（`Name="freedesktop-secret-service"`）+ **`SecretKeyEnvelope`**（AES-256-GCM，格式 `[版本:1][nonce:12][标签:16][密文]` → Base64；`internal` + `InternalsVisibleTo("DdraigBench.Test")`）。
-  - **回退**：`PlainTextSecretProtector`（`plain:` 前缀）；工厂 `SecretProtectors.CreateDefaultAsync`（Windows→DPAPI；Linux/FreeBSD 探测密钥库可用→keyring；否则明文回退）+ `CreateByName`（读历史文件，含 `freedesktop-secret-service`）。
-  - **存储**：`Core/Connections/ConnectionStore.cs` camelCase JSON（`version`/`protector`/`connections`），**只加密连接串**、名称与方言明文便于列表展示，**先写 `.tmp` 再 `File.Move` 覆盖**（避免半截文件），文件缺失返回空清单。**明文文件升级到 DPAPI/keyring 后仍可读**（按文件里的 `protector` 字段取实现），未知 `protector` 值直接报明确错误。
-  - **测试**：全量 **132 个（129 通过 / 3 跳过 / 0 失败）**——含 `SecretKeyEnvelopeTests`（13：往返/篡改/错钥/版本/截断）、`SecretServiceProtectorTests`（6，假主密钥，无密钥库依赖）、`SecretServiceKeyProviderTests`（5，**真 gnome-keyring 集成**，用唯一 `application` 属性隔离并在结束时删除，不污染真实凭据）、`ConnectionStoreTests`（11，含**信封加密落盘后文件里搜不到 `s3cret-pw`/`Server=db`**、`0600`/`0700` 权限、**既有目录权限不被擅改**的回归）。
-  - **未完成：macOS Keychain**（本机为 Linux，无法实测）。UI 接线（`CreateDefaultAsync` → `ConnectionStore` → 顶部告警条）仍未做：`ConnectionStore` 目前尚未接入壳工程。
-  - **踩坑（务必保留）**：① DotNet 的 **`Ace4896` 只暴露 `SecretService.SearchItemsAsync`（返回 `(unlocked, locked)` 元组）**，`Collection.SearchItemsAsync` 才返回 `Item[]`；② `Path.GetFileName` 在 Linux 上**不切 `\`**（既有 `SuggestName` 缺陷已修，改用手写分隔符归一化）；③ **`ConnectionStore` 曾误 chmod 配置文件的既有父目录**（`/tmp` 等）——改为**仅对本次新建目录**收紧权限（§2.8 规则 5）。
+  - **macOS（2026-10-04 落地）**：`MacKeychainKeyProvider`（主密钥存 login keychain 的 `kSecClassGenericPassword` 条目，`service=DdraigBench / account=master-key / label="DdraigBench master key"`，`SemaphoreSlim` + 内存缓存 + `ResetMasterKeyAsync` 重置入口）+ `MacKeychainSecretProtector`（`Name="macos-keychain"`）+ `MacSecurityFramework`（`SecItem*` / CoreFoundation P/Invoke，键名常量走 `dlsym`）+ `KeychainUnavailableException`。**零新包**（仅 `<AllowUnsafeBlocks>`）。**并发首建走"读到 DuplicateItem 就重读那把"而非删再加**，杜绝两个进程各持一把不同密钥。
+  - **回退**：`PlainTextSecretProtector`（`plain:` 前缀）；工厂 `SecretProtectors.CreateDefaultAsync`（Windows→DPAPI；macOS→探测钥匙串（禁 UI）可用则钥匙串；Linux/FreeBSD 探测密钥库可用→keyring；否则明文回退）+ `CreateByName`（读历史文件，含 `freedesktop-secret-service` / `macos-keychain`）。**macOS 正式使用实例允许弹授权框**（首次「Always Allow」后无感），探测实例一律 `suppressUi` 免得 CI 挂在看不见的授权框上。
+  - **存储**：`Core/Connections/ConnectionStore.cs` camelCase JSON（`version`/`protector`/`connections`），**只加密连接串**、名称与方言明文便于列表展示，**先写 `.tmp` 再 `File.Move` 覆盖**（避免半截文件），文件缺失返回空清单。**明文文件升级到 DPAPI/keyring/钥匙串 后仍可读**（按文件里的 `protector` 字段取实现），未知 `protector` 值直接报明确错误。落盘 schema **不引入 keyId 指纹**（保持跨平台一致），"密钥已换/条目被删"靠 `SecretKeyEnvelope` 的认证失败 + 明确错误消息表达。
+  - **测试**：macOS 本机全量 **145 个（131 通过 / 14 跳过 / 0 失败）**——新增 `MacKeychainProtectorTests`（6，假主密钥，跨平台可跑）与 `MacKeychainKeyProviderTests`（6，**真 login keychain 集成**：唯一 service 隔离 + 结束即删 + 全程 `suppressUi`，含 `Item_is_discoverable_by_the_security_cli` 用 Apple `security` CLI 交叉验证 service/account/label 真按系统常量落库）；`ConnectionStoreTests` 的两个信封测试已放宽到 macOS（本机 11 个全过、0 跳过）。Linux 侧历史测试见 `SecretKeyEnvelopeTests`（13）、`SecretServiceProtectorTests`（6）、`SecretServiceKeyProviderTests`（5，真 gnome-keyring）。
+  - **仍未完成：UI 接线**（`CreateDefaultAsync` → `ConnectionStore` → 连接列表增删改 → 顶部明文回退告警条）：`ConnectionStore` 目前尚未接入壳工程，Mac 用户还拿不到"连接清单持久化"这层。另`macOS` 侧的授权失败**提示文案**待接线时定（`KeychainUnavailableException.Status` 已带 OSStatus）。
+  - **踩坑（务必保留）**：① DotNet 的 **`Ace4896` 只暴露 `SecretService.SearchItemsAsync`（返回 `(unlocked, locked)` 元组）**，`Collection.SearchItemsAsync` 才返回 `Item[]`；② `Path.GetFileName` 在 Linux 上**不切 `\`**（既有 `SuggestName` 缺陷已修，改用手写分隔符归一化）；③ **`ConnectionStore` 曾误 chmod 配置文件的既有父目录**（`/tmp` 等）——改为**仅对本次新建目录**收紧权限（§2.8 规则 5）；④ **`CFDictionaryCreate` 的回调参数传 NULL 会导致字典不 retain 键值** → 释放 CFString 后 `SecItem*` 读野指针**永久卡死**（macOS 侧头号坑，见 §4）；⑤ `security add -U` **不能**用来改写我们创建的条目来模拟损坏（会换 ACL），造损坏条目用我们自己的 `SecItemUpdate`。
 
-- **依赖审计（M0 起累积）**：见 §2；M4-4 新增 `Ace4896.DBus.Services.Secrets 1.6.0`（MIT）与其传递依赖 `Tmds.DBus.Protocol`（MIT），均**无原生库依赖**。
+- **依赖审计（M0 起累积）**：见 §2；M4-4 新增 `Ace4896.DBus.Services.Secrets 1.6.0`（MIT）与其传递依赖 `Tmds.DBus.Protocol`（MIT），均**无原生库依赖**；macOS 侧**零新包**（只用系统自带 `Security.framework` / `CoreFoundation`）。
 
 ---
 

@@ -136,13 +136,20 @@ public sealed class SecretServiceKeyProviderTests
     [Fact]
     public async Task Default_factory_falls_back_or_upgrades_on_this_machine()
     {
-        // 工厂行为：Windows → DPAPI；能连密钥库 → Secret Service；否则 → 明文回退。
+        // 工厂行为：Windows → DPAPI；macOS → 钥匙串；能连密钥库 → Secret Service；否则 → 明文回退。
         var protector = await SecretProtectors.CreateDefaultAsync();
 
         if (OperatingSystem.IsWindows())
         {
             Assert.IsType<DpapiSecretProtector>(protector);
             Assert.True(protector.IsEncrypted);
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            Assert.True(
+                protector is MacKeychainSecretProtector or PlainTextSecretProtector,
+                $"非预期类型：{protector.GetType().Name}");
+            Assert.Equal(protector is MacKeychainSecretProtector, protector.IsEncrypted);
         }
         else if (OnSupportedPlatform)
         {

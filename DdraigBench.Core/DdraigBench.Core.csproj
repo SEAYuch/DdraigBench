@@ -3,6 +3,9 @@
         <TargetFramework>net10.0</TargetFramework>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
+        <!-- 仅 Secrets/MacSecurityFramework.cs 需要：.NET 的 [LibraryImport] 源生成器要求开 unsafe（SYSLIB1062）。
+             本文件不使用指针语法（钉住数组走 GCHandle），其余代码保持普通托管写法。 -->
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
 
     <ItemGroup>

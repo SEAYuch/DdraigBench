@@ -91,13 +91,12 @@ public sealed class ConnectionStoreTests : IDisposable
     [Fact]
     public async Task Round_trip_with_keyring_envelope_hides_password_in_file()
     {
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsFreeBSD())
+        if (EnvelopeProtectorOnThisPlatform() is not { } protector)
         {
-            Assert.Skip("信封保护器仅 Linux/FreeBSD 可用");
+            Assert.Skip("信封保护器仅 Linux/FreeBSD/macOS 可用");
             return;
         }
 
-        var protector = new SecretServiceSecretProtector(new FakeMasterKeyProvider());
         var store = new ConnectionStore(_filePath, protector);
 
         await store.SaveAsync(_profiles);
@@ -109,22 +108,23 @@ public sealed class ConnectionStoreTests : IDisposable
         var json = await File.ReadAllTextAsync(_filePath);
         Assert.DoesNotContain("s3cret-pw", json);
         Assert.DoesNotContain("Server=db", json);
-        Assert.Contains("freedesktop-secret-service", json);
+        Assert.Contains(protector.Name, json);
         Assert.Contains("\"Sqlite\"", json); // 名称与方言仍明文，便于列表展示
     }
 
     [Fact]
     public async Task Plaintext_file_still_loads_after_upgrading_to_keyring_envelope()
     {
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsFreeBSD())
+        if (EnvelopeProtectorOnThisPlatform() is not { } protector)
         {
-            Assert.Skip("信封保护器仅 Linux/FreeBSD 可用");
+            Assert.Skip("信封保护器仅 Linux/FreeBSD/macOS 可用");
             return;
         }
 
         await new ConnectionStore(_filePath, new PlainTextSecretProtector()).SaveAsync(_profiles);
 
-        var upgraded = new ConnectionStore(_filePath, new SecretServiceSecretProtector(new FakeMasterKeyProvider()));
+        // 换一把"新主密钥"的保护器：明文文件仍要读得回来（升级不丢连接）。
+        var upgraded = new ConnectionStore(_filePath, protector);
         var loaded = await upgraded.LoadAsync();
 
         Assert.Equal(_profiles, loaded);
@@ -133,7 +133,20 @@ public sealed class ConnectionStoreTests : IDisposable
         await upgraded.SaveAsync(loaded);
         var json = await File.ReadAllTextAsync(_filePath);
         Assert.DoesNotContain("s3cret-pw", json);
-        Assert.Contains("freedesktop-secret-service", json);
+        Assert.Contains(protector.Name, json);
+    }
+
+    /// <summary>本平台的信封保护器（假主密钥，无需真实密钥库）；Windows/其它平台返回 null。</summary>
+    private static ISecretProtector? EnvelopeProtectorOnThisPlatform()
+    {
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsFreeBSD())
+        {
+            return new SecretServiceSecretProtector(new FakeMasterKeyProvider());
+        }
+
+        return OperatingSystem.IsMacOS()
+            ? new MacKeychainSecretProtector(new FakeMasterKeyProvider())
+            : null;
     }
 
     [Fact]
