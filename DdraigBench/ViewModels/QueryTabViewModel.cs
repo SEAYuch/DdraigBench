@@ -23,7 +23,9 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     private ConnectionLease? _lease;
     private DbTransaction? _transaction;
     private bool _useTransaction;
-    private decimal? _maxRows = QueryRunner.DefaultMaxRows;
+    private decimal? _pageSize = QueryRunner.DefaultMaxRows;
+    private int _currentPage = 1;
+    private bool _hasNextPage;
     private string _sql = "SELECT 1";
     private IReadOnlyList<string> _columns = Array.Empty<string>();
     private IReadOnlyList<object?[]> _rows = Array.Empty<object?[]>();
@@ -42,6 +44,8 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
         _exportDialog = exportDialog;
         ExecuteCommand = ReactiveCommand.CreateFromTask(ExecuteAsync);
         CancelCommand = ReactiveCommand.Create(Cancel);
+        NextPageCommand = ReactiveCommand.CreateFromTask(NextPageAsync);
+        PreviousPageCommand = ReactiveCommand.CreateFromTask(PreviousPageAsync);
         CommitCommand = ReactiveCommand.CreateFromTask(CommitAsync);
         RollbackCommand = ReactiveCommand.CreateFromTask(RollbackAsync);
         ExportCsvCommand = ReactiveCommand.CreateFromTask(ExportCsvAsync);
@@ -53,6 +57,10 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     public ICommand ExecuteCommand { get; }
 
     public ICommand CancelCommand { get; }
+
+public ICommand NextPageCommand { get; }
+
+public ICommand PreviousPageCommand { get; }
 
     public ICommand CommitCommand { get; }
 
@@ -118,12 +126,38 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
 
     public bool HasTransaction => _transaction is not null;
 
-    /// <summary>结果行数上限（取满即截断；网格本身按行虚拟化，只渲染可见行）。</summary>
-    public decimal? MaxRows
+    /// <summary>每页行数（服务端分页的 <c>LIMIT</c>；未分页时也是读取上限，默认 1000）。</summary>
+    public decimal? PageSize
     {
-        get => _maxRows;
-        set => this.RaiseAndSetIfChanged(ref _maxRows, value);
+        get => _pageSize;
+        set => this.RaiseAndSetIfChanged(ref _pageSize, value);
     }
+
+    /// <summary>当前页码（从 1 开始）。翻页时会重新执行同一条语句。</summary>
+    public int CurrentPage
+    {
+        get => _currentPage;
+        private set
+        {
+            this.RaiseAndSetIfChanged(ref _currentPage, value);
+            this.RaisePropertyChanged(nameof(HasPreviousPage));
+        }
+    }
+
+    /// <summary>上次执行时是否还有下一页（多读一行探测得出）。</summary>
+    public bool HasNextPage
+    {
+        get => _hasNextPage;
+        private set
+        {
+            this.RaiseAndSetIfChanged(ref _hasNextPage, value);
+            this.RaisePropertyChanged(nameof(CanGoToNextPage));
+        }
+    }
+
+    public bool CanGoToNextPage => HasNextPage && !IsExecuting;
+
+    public bool HasPreviousPage => CurrentPage > 1;
 
     /// <summary>请求取消当前执行；在“执行刚开始”时按下也能生效。</summary>
     public void Cancel()
@@ -139,6 +173,35 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     }
 
     public async Task ExecuteAsync()
+    {
+        // 手动按「执行」回到第一页；翻页命令走 RunAsync（不重置页码）。
+        CurrentPage = 1;
+        await RunAsync();
+    }
+
+    public async Task NextPageAsync()
+    {
+        if (!HasNextPage)
+        {
+            return;
+        }
+
+        CurrentPage++;
+        await RunAsync();
+    }
+
+    public async Task PreviousPageAsync()
+    {
+        if (!HasPreviousPage)
+        {
+            return;
+        }
+
+        CurrentPage--;
+        await RunAsync();
+    }
+
+    private async Task RunAsync()
     {
         var session = _sessionProvider();
         if (session is null)
@@ -168,11 +231,20 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
         try
         {
             var runner = new QueryRunner(session.Fsql);
-            var sql = Sql;
             var transaction = _transaction;
-            var maxRows = MaxRows is > 0 ? (int)MaxRows.Value : QueryRunner.DefaultMaxRows;
+            var pageSize = PageSize is > 0 ? (int)PageSize.Value : QueryRunner.DefaultMaxRows;
+
+            // 服务端分页：查询语句包LIMIT/OFFSET；非查询语句原样执行。
+            // 刻意多取一行（pageSize + 1）用来判断"还有下一页"，随后把那行裁掉——
+            // 这一行必须由 SQL 的 LIMIT 产生，读取上限拿不到它。
+            var paged = SqlDialects.TryGet(session.Profile.DataType, out var dialect)
+                ? PagedSql.Build(Sql, dialect, pageSize + 1, (long)(CurrentPage - 1) * pageSize)
+                : null;
+            var statement = paged ?? Sql;
+            var readCap = paged is null ? pageSize : pageSize + 1;
+
             var result = await Task.Run(
-                () => runner.ExecuteAsync(sql, maxRows, token, transaction), token);
+                () => runner.ExecuteAsync(statement, readCap, token, transaction), token);
 
             if (token.IsCancellationRequested)
             {
@@ -180,9 +252,24 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
                 return;
             }
 
-            Columns = result.Columns;
-            Rows = result.Rows;
-            Status = BuildStatus(result);
+            var visible = result;
+            if (paged is not null)
+            {
+                // 多读的那一行落在结果里：超过 pageSize 就说明还有下一页，裁掉它。
+                HasNextPage = result.Rows.Count > pageSize;
+                if (HasNextPage)
+                {
+                    visible = result with { Rows = result.Rows.Take(pageSize).ToList() };
+                }
+            }
+            else
+            {
+                HasNextPage = false;
+            }
+
+            Columns = visible.Columns;
+            Rows = visible.Rows;
+            Status = BuildStatus(visible, paged is not null);
         }
         catch (OperationCanceledException)
         {
@@ -198,6 +285,7 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
             _cts.Dispose();
             _cts = null;
             IsExecuting = false;
+            this.RaisePropertyChanged(nameof(CanGoToNextPage));
         }
     }
 
@@ -332,7 +420,7 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
-    private static string BuildStatus(QueryResult result)
+    private string BuildStatus(QueryResult result, bool paged)
     {
         if (result.Error is not null)
         {
@@ -345,9 +433,14 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
             $"{result.Elapsed.TotalMilliseconds:F0} ms",
         };
 
-        if (result.Truncated)
+        if (paged)
         {
-            parts.Add("已截断，可提高行数上限");
+            parts.Add($"第 {CurrentPage} 页（服务端分页，每页 {result.Rows.Count} 行）");
+            parts.Add(HasNextPage ? "有下一页 →" : "已是最后一页");
+        }
+        else if (result.Truncated)
+        {
+            parts.Add("已截断，可提高每页行数");
         }
 
         if (result.AffectedRows > 0)

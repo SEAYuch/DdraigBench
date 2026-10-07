@@ -1,6 +1,7 @@
 // DdraigBench — 测试替身（文件选择 / 导出对话框）
 
 using System.Security.Cryptography;
+using DdraigBench.Core.Connections;
 using DdraigBench.Core.Secrets;
 using DdraigBench.Services;
 
@@ -82,4 +83,63 @@ internal sealed class FakeMasterKeyProvider(byte[]? key = null) : IMasterKeyProv
         CallCount++;
         return ValueTask.FromResult(Key);
     }
+}
+
+/// <summary>壳层测试用的口令保护器替身：只暴露名字与是否加密，不做任何真实加解密。</summary>
+internal sealed class FakeSecretProtector(string name, bool isEncrypted) : ISecretProtector
+{
+    public string Name { get; } = name;
+
+    public bool IsEncrypted { get; } = isEncrypted;
+
+    public ValueTask<string> ProtectAsync(string plainText, CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult(plainText);
+
+    public ValueTask<string> UnprotectAsync(string protectedText, CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult(protectedText);
+}
+
+/// <summary>内存版连接清单存储：让 MainViewModel 的持久化逻辑无需真实文件与密钥库即可测。</summary>
+internal sealed class StubConnectionStore(
+    IReadOnlyList<ConnectionProfile>? initial = null,
+    bool isEncrypted = true) : IConnectionStore
+{
+    public ISecretProtector Protector { get; } =
+        new FakeSecretProtector(isEncrypted ? "stub-encrypted" : "plaintext", isEncrypted);
+
+    public List<ConnectionProfile> Saved { get; set; } = [.. initial ?? []];
+
+    public int LoadCount { get; private set; }
+
+    public int SaveCount { get; private set; }
+
+    public Exception? LoadFailure { get; init; }
+
+    public Exception? CreateFailure { get; init; }
+
+    public Task<IReadOnlyList<ConnectionProfile>> LoadAsync(CancellationToken ct = default)
+    {
+        LoadCount++;
+        return LoadFailure is not null
+            ? Task.FromException<IReadOnlyList<ConnectionProfile>>(LoadFailure)
+            : Task.FromResult<IReadOnlyList<ConnectionProfile>>(Saved.ToList());
+    }
+
+    public Task SaveAsync(IReadOnlyList<ConnectionProfile> profiles, CancellationToken ct = default)
+    {
+        SaveCount++;
+        Saved = [.. profiles];
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>可编排失败的 store 工厂（测"启动时读清单失败也不崩"）。</summary>
+internal sealed class StubConnectionStoreFactory(StubConnectionStore? store = null) : IConnectionStoreFactory
+{
+    public StubConnectionStore? Store { get; } = store;
+
+    public Task<IConnectionStore> CreateAsync(CancellationToken ct = default) =>
+        Store?.CreateFailure is { } failure
+            ? Task.FromException<IConnectionStore>(failure)
+            : Task.FromResult<IConnectionStore>(Store!);
 }

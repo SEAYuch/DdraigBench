@@ -104,7 +104,7 @@ Provider 的驱动版本被 FreeSql 钉死，上游不动则无法升级：
 | 包 | 版本 | 许可证 | 依赖的 Avalonia 线 | 判定 |
 |---|---|---|---|---|
 | Avalonia.Themes.Fluent | 12.1.2 | MIT | 内置（框架四件套） | 基线保留，但 `<FluentTheme/>` 元素已移除（见下） |
-| **FluentAvaloniaUI**（amwx） | 3.1.0 | MIT | **≥12.1.0** ✅ | ✅ **采用**。WinUI3 控件：NavigationView / TabView / ContentDialog / InfoBar / SettingsExpander / TaskDialog |
+| **FluentAvaloniaUI**（amwx） | 3.1.0 | MIT | **≥12.1.0** ✅ | ✅ **采用**。WinUI3 控件：NavigationView / TabView / ContentDialog / SettingsExpander / TaskDialog（⚠️ **InfoBar 实测解析不到**：3.1.0 的 `FluentAvalonia.UI.Controls` 下无该类型，XAML 编译报 AVLN2000——2026-10-04 实测，故告警条用普通 `Border` 自绘） |
 | **FluentIcons.Avalonia.Fluent**（davidxuang） | 2.1.341 | MIT | 钉 FluentAvaloniaUI **≥3.0.0** ✅ | ✅ **采用**。微软 Fluent UI System Icons（Regular/Filled/Color），与主题同设计语言 |
 | FluentIcons.Avalonia | 2.1.341 | MIT | ≥12.0.0 ✅ | 备选：仅用内置 FluentTheme 时选它（非 `.Fluent` 变体） |
 | Material.Icons.Avalonia | 3.0.2 | MIT | ≥12.0.0 ✅ | 兼容但属 Material 体系，与 Fluent 混用风格割裂，不用 |
@@ -184,16 +184,16 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 ├── DdraigBench/                  # Avalonia 壳（唯一引用 Avalonia 的工程）
 │   ├── Program.cs / App.axaml
 │   ├── Assets/
-│   ├── Services/                # IFilePicker（开+存）+ StorageProviderFilePicker + IConnectionDialog + IExportDialog + IDdlViewer（M1-6 / M2-b / M4-2 / M4-3）
+│   ├── Services/                # IFilePicker（开+存）+ StorageProviderFilePicker + IConnectionDialog + IExportDialog + IDdlViewer（M1-6 / M2-b / M4-2 / M4-3）+ IConnectionStoreFactory/SecretConnectionStoreFactory（M4-4 接线）
 │   ├── Controls/                # 附加属性：ResultColumns（DataGrid 动态列）+ EditorText（TextEditor 文本同步）
 │   ├── Views/                   # axaml + code-behind（仅 InitializeComponent）
-│   │   ├── MainWindow.axaml     # 布局：左连接树 | 中 Tab 区 | 底状态面板（M1-6）
+│   │   ├── MainWindow.axaml     # 布局：顶部明文告警条 + 工具栏 | 左「已保存连接」+ 连接树 | 中 Tab 区 | 底状态面板（M1-6 / M4-4 接线）
 │   │   ├── QueryTabView.axaml   # AvaloniaEdit SQL 编辑器 + 结果 DataGrid（M1-6 / M3-3）
 │   │   └── ConnectionDialogView.axaml   # 按 Provider 出参数表（M2-b）
 │   │   ├── ExportDialogView.axaml      # 导出对话框（M4-2）
 │   │   └── DdlView.axaml               # DDL 预览窗口（M4-3）
 │   └── ViewModels/              # 全部 ReactiveObject，构造注入 Core 接口
-│       ├── MainViewModel        # 树 + Tab 集合 + 全局命令 + DDL 预览（M1-6 / M4-2 / M4-3）
+│       ├── MainViewModel        # 树 + Tab 集合 + 全局命令 + DDL 预览 + 已保存连接清单/明文告警（M1-6 / M4-2 / M4-3 / M4-4 接线）
 │       ├── ConnectionTreeNodeViewModel  # 左树节点模型（惰性加载子节点，带 Database，M1-6 / M4-3）
 │       ├── QueryTabViewModel    # 语句执行、取消、事务、结果集/状态、导出（M1-6 / M3 / M4-2）
 │       ├── ConnectionDialogViewModel    # Provider 参数表 + 校验 + BuildProfile（M2-b）
@@ -203,6 +203,7 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 │   ├── Connections/
 │   │   ├── ConnectionProfile.cs       # 连接定义（Name / DataType / ConnectionString，M1-3 已落地）
 │   │   ├── ConnectionParameters.cs / ConnectionStringBuilder.cs   # 按 Provider 出参数 → 连接串（M2-b）
+│   │   ├── IConnectionStore.cs        # 连接清单存储契约（壳层注入，便于 VM 单测，M4-4 接线）
 │   │   ├── ConnectionStore.cs         # 连接清单持久化：JSON + 口令保护（连接串加密，名称/方言明文）（M4-4）
 │   │   ├── FreeSqlFactory.cs          # ConnectionProfile → IFreeSql（每连接单例，M1-3 已落地）
 │   │   └── IConnectionTester.cs / FreeSqlConnectionTester.cs      # 连接测试（M2-b）
@@ -233,6 +234,7 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 │   ├── Querying/
 │   │   ├── QueryResult.cs            # Columns + Rows(object[][]) + Affected + 时长 + Truncated
 │   │   ├── QueryRunner.cs            # MasterPool 原始连接执行 + 流式分批读取（见 §4 实测）
+│   │   ├── PagedSql.cs               # 服务端分页：包派生表 + 方言 LIMIT/OFFSET（M3-5，纯逻辑）
 │   │   └── Exporting/ResultExporter.cs  # CSV / INSERT 脚本渲染（M4-2，纯逻辑）
 │   └── Dialects/
 │       ├── ISqlDialect.cs / SqlDialectBase.cs   # 方言钩子：标识符引用 / 分页 / 字面量渲染（M4-1）
@@ -292,6 +294,7 @@ public sealed class DbSession : IAsyncDisposable
 - **M1 实测结论（2026-09-18）**：`LeaseRawAsync` **不能**返回裸 `DbConnection`——`MasterPool.Get()` 的归还依赖 `Object<T>` 包装对象（`Object<T>.Dispose()` → `Pool.Return`），丢掉包装即连接池泄漏。故返回自定义 `ConnectionLease`（`IDisposable`/`IAsyncDisposable`，只暴露 `.Connection`）。单测见 `DdraigBench.Test/DbSessionTests.cs`。
 - **M2 实测结论（2026-09-18）**：`Ado.MasterPool.Get()` **会真正打开连接**（FreeSql 自带的 `DbConnectionStringPool.Get` 内部调用 `DbConnection.Open()`）——故不能用"取连接看类型"做离线断言；GPL 驱动校验改为**程序集加载探测**（`Assembly.Load("MySqlConnector")` 成功、`MySql.Data` 失败）。多方言集成测试在探测不可达时 `Assert.Skip`。
 - **M3-2 事务实现（2026-09-18）**：事务态挂在 `QueryTabViewModel`（**每标签独立**）——`BeginTransactionAsync()` 用 `DbSession.LeaseRawAsync()` 持有**一条**连接并 `BeginTransaction`；执行时把该 `DbTransaction` 传给 `QueryRunner.ExecuteAsync(..., transaction:)`，SQL 便跑在事务那条连接上（**不走池路径**）；`Commit`/`Rollback`/标签处置都会归还租约。注意：`Cancel()` 只中断客户端读取，**不会**提交或回滚事务。
+- **M3-5 服务端分页实测（2026-10-05）**：判定"有没有下一页"的**多读那一行必须由 SQL 的 `LIMIT pageSize+1` 产生**，不能指望 `QueryRunner` 的读取上限——它的 `Truncated` 语义是"取满 `maxRows` 之外还有一行"，把 `maxRows=pageSize+1` 时恒为 false（初版踩坑，`HasNextPage` 一直 false、翻页点击无效）。另：`ExecuteAsync()` 必须**回到第 1 页**，而翻页要另走私有 `RunAsync()`，否则翻页命令里的 `CurrentPage++` 立刻被重置。分页 SQL 必须包派生表（`SELECT * FROM (…) AS "ddb_page" LIMIT …`），"是否已分页"只扫**顶层**关键字（括号深度 + 字符串/引用标识符状态机），避免误伤子查询 LIMIT 与字面量 `'limit'`。
 - **M1 实测结论（2026-09-18，SQLite）**：`IDbFirst.GetDatabases()` 返回 `[main]`；`GetTablesByDatabase("main")` 同时含表与视图，`DbTableInfo.Type` 为 `FreeSql.DatabaseModel.DbTableType.TABLE/VIEW`，`Schema` 为空串。故 SQLite 的"库→表→列"可直接映射、无需特判；`GetObjectsAsync` 目前仅实现 Table/View，其余 kind 抛 `NotSupportedException`。单测见 `DdraigBench.Test/MetadataExplorerTests.cs`。
 - **M4-4 密钥库实测结论（2026-10-01，Linux + gnome-keyring）**：
   - `Ace4896.DBus.Services.Secrets` 的 `SecretService.SearchItemsAsync` 返回 **(unlocked, locked) 元组**，而 `Collection.SearchItemsAsync` 返回 `Item[]`——搜索"本应用的主密钥条目"要用前者并取元组两半；`Item.GetSecretAsync()` 会自动解锁条目。
@@ -372,8 +375,8 @@ public sealed class DbSession : IAsyncDisposable
 
 - [ ] **M1 黄金闭环（SQLite）**：Provider.Sqlite 进主工程+测试工程 → Core 工程（Connections/Metadata/Querying）→ MainWindow 连 SQLite 文件 → 左树展开 → `SELECT 1` 出网格。验收：xunit 全绿 + GPL 防回归测试进仓库 + 手动截图。
 - [ ] **M2 多方言**：MySqlConnector / PostgreSQL **已接入并实测通过**（SqlServer 待靶机挂起）；连接对话框按 Provider 出参数表 ✅；GPL 防回归已升级为真测试 ✅（§7）。（"MasterPool 冒烟测试回写 §4" 已在 M1-1 完成。）
-- [ ] **M3 编辑器与会话**：SQL 编辑器（候选 AvaloniaEdit，**引入前先验证与 Avalonia 12.1 兼容版本**）；事务模式（LeaseRawAsync）；取消执行；结果网格分页（DataGrid 分页或虚拟化）。
-- [ ] **M4 生产力功能**：连接凭据加密存储、导出 CSV/INSERT、DDL 预览、ISqlDialect 落地。
+- [x] **M3 编辑器与会话**：SQL 编辑器（AvaloniaEdit 12.0.0，§2.7 实查通过）；事务模式（LeaseRawAsync）；取消执行；结果网格**服务端分页 + 行虚拟化**（M3-1..M3-4 均已完成，2026-10-05）。
+- [x] **M4 生产力功能**：连接凭据加密存储（三平台 + UI 接线）、导出 CSV/INSERT、DDL 预览、ISqlDialect 落地。**已全部完成**（2026-10-05，含 M4-4 的壳工程接线）。
 
 M0（依赖整改）已完成：`FreeSql.All` 已替换为裸 `FreeSql`，GPL 风险源已移除。UI 依赖骨架亦已就位（FluentAvaloniaUI 3.1.0 主题 + FluentIcons.Avalonia.Fluent 2.1.341 + Avalonia.Controls.DataGrid 12.1.2，§2.6）。
 
@@ -385,11 +388,12 @@ M2-b（2026-09-18）**完成**：`ConnectionParameters`/`ConnectionStringBuilder
 
 M2 收尾（2026-09-18）：连接对话框加 **Provider 友好名**（`ProviderOption.DisplayName`：SQLite（本地文件）/ MySQL / MariaDB / PostgreSQL）与 **测试连接** 按钮（`IConnectionTester` + `FreeSqlConnectionTester`，返回 `null` 即成功、失败给出原因；VM 侧 `TestSucceeded`/`TestFailure`）。SqlServer **明确挂起**（无靶机 → 不装包、不入对话框，见 §2.2）。测试 52 个全绿（无靶机时 2 跳过；接靶机时 52/52）。**M2 至此收口**，仅余 SqlServer 一项待靶机。
 
-M3 进度（2026-09-18，切片进行中）：
+M3 进度（2026-09-18 起，2026-10-05 收口）：
 - **M3-1 取消执行 ✅**：`QueryTabViewModel` 接 `CancellationTokenSource`（`Cancel()`/`CanCancel`，含"执行刚开始时按下也生效"的 `_cancelRequested` 兜底），token 贯穿 `QueryRunner.ExecuteAsync` → ADO；执行中显示"取消"按钮（`MainWindow` 绑 `SelectedTab.CanCancel`）。
 - **M3-2 事务模式 ✅**：`QueryTabViewModel` 持租约 + `DbTransaction`，`QueryRunner` 加事务通道（SQL 跑在事务连接上）；`BEGIN → INSERT → ROLLBACK` 丢弃、`COMMIT` 持久、标签处置自动回滚；接新连接时旧标签先处置（回滚 + 归还租约）。测试 60 个全绿（无靶机时 2 跳过；接靶机 60/60）。
 - **M3-3 SQL 编辑器 ✅**：`Avalonia.AvaloniaEdit 12.0.0`（§2.7 实查通过）+ 显式引入 `avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml`；`QueryTabView` 的 `TextBox` 换成 `TextEditor`（行号 / 等宽 / 不换行）；因 `TextEditor.Text` 非 `AvaloniaProperty`，用附加属性 `Controls/EditorText.Text` 双向绑定到 VM 的 `Sql`。
-- **M3-4 结果上限与虚拟化 ✅**：`QueryResult` 加 `Truncated`（取满 `maxRows` 后**多读一行**判定，区分"正好 N 行"与"被截断"）；`QueryTabViewModel.MaxRows`（`decimal?`，配 `NumericUpDown`，默认 `QueryRunner.DefaultMaxRows`）；状态栏在截断时提示"已截断，可提高行数上限"。**行虚拟化**由 DataGrid 自带（只渲染可见行），我们只确保不关闭它。真·服务端分页（LIMIT/OFFSET）仍留 M4 的 `ISqlDialect`。
+- **M3-4 结果上限与虚拟化 ✅**：`QueryResult` 加 `Truncated`（取满 `maxRows` 后**多读一行**判定，区分"正好 N 行"与"被截断"）。**行虚拟化**由 DataGrid 自带（只渲染可见行），我们只确保不关闭它。
+- **M3-5 真·服务端分页 ✅（2026-10-05，把 M3-4 遗留的 LIMIT/OFFSET 收口）**：`Core/Querying/PagedSql.cs` 纯逻辑——把查询包成 `SELECT * FROM (<原语句>) AS "ddb_page" LIMIT n+1 OFFSET m`（**必须包派生表**：用户 SQL 可能已带 LIMIT、以分号结尾或含锁提示，直接拼接会语法错）。判定"是否查询"只看首词 SELECT/WITH；"是否已分页"做**顶层**关键字扫描（跟踪括号深度 + 字符串/引用标识符状态，故子查询里的 LIMIT 与字面量 `'limit'` 都不误伤）。`QueryTabViewModel` 以 `PageSize`（默认 1000）取代原 `MaxRows`，配 `CurrentPage`/`HasNextPage`/`HasPreviousPage` + `NextPage`/`PreviousPage` 命令，**刻意多取一行（`LIMIT pageSize+1`）判定有无下一页再裁掉**——注意这一行必须由 SQL 的 LIMIT 产生，`QueryRunner` 的读取上限拿不到它（初版就踩了：把 `Truncated` 当 `HasNextPage` 用，结果恒为 false）。`ExecuteAsync` 回第 1 页、翻页走私有 `RunAsync`（否则翻页会被重置回第 1 页）。非查询语句（INSERT/UPDATE/DDL）原样执行，看 `影响 N 行`。`QueryTabView` 换成分页工具条（每页行数 + ◀/▶ + 第 N 页）。测试：`PagedSqlTests`（26 = 7 个 Fact + 19 组 InlineData，含 CTE/分号/子查询 LIMIT/字面量/转义引号/非法参数/方言引用）+ `QueryTabViewModelTests` 4 个真 SQLite 分页往返（切片/最后一页/重执行回第 1 页/用户自带 LIMIT 不叠加/非查询语句原样执行）。全量 180 个（168 通过 / 12 跳过 / 0 失败）。
 - **前置遗留已部分解决**：headless 平台已接通（`Avalonia.Headless` + xUnit v3 `AssemblyFixture`），`ResultColumns` 动态列已纳入回归 ✅；受 `xunit.v3` 版本与 `HeadlessUnitTestSession` 挂死限制，需 UI 线程的控件（如 `TextEditor`）仍无法测（§7）。
 
 M4 进度（2026-09-18，切片进行中）：
@@ -404,9 +408,9 @@ M4 进度（2026-09-18，切片进行中）：
   - **macOS（2026-10-04 落地）**：`MacKeychainKeyProvider`（主密钥存 login keychain 的 `kSecClassGenericPassword` 条目，`service=DdraigBench / account=master-key / label="DdraigBench master key"`，`SemaphoreSlim` + 内存缓存 + `ResetMasterKeyAsync` 重置入口）+ `MacKeychainSecretProtector`（`Name="macos-keychain"`）+ `MacSecurityFramework`（`SecItem*` / CoreFoundation P/Invoke，键名常量走 `dlsym`）+ `KeychainUnavailableException`。**零新包**（仅 `<AllowUnsafeBlocks>`）。**并发首建走"读到 DuplicateItem 就重读那把"而非删再加**，杜绝两个进程各持一把不同密钥。
   - **回退**：`PlainTextSecretProtector`（`plain:` 前缀）；工厂 `SecretProtectors.CreateDefaultAsync`（Windows→DPAPI；macOS→探测钥匙串（禁 UI）可用则钥匙串；Linux/FreeBSD 探测密钥库可用→keyring；否则明文回退）+ `CreateByName`（读历史文件，含 `freedesktop-secret-service` / `macos-keychain`）。**macOS 正式使用实例允许弹授权框**（首次「Always Allow」后无感），探测实例一律 `suppressUi` 免得 CI 挂在看不见的授权框上。
   - **存储**：`Core/Connections/ConnectionStore.cs` camelCase JSON（`version`/`protector`/`connections`），**只加密连接串**、名称与方言明文便于列表展示，**先写 `.tmp` 再 `File.Move` 覆盖**（避免半截文件），文件缺失返回空清单。**明文文件升级到 DPAPI/keyring/钥匙串 后仍可读**（按文件里的 `protector` 字段取实现），未知 `protector` 值直接报明确错误。落盘 schema **不引入 keyId 指纹**（保持跨平台一致），"密钥已换/条目被删"靠 `SecretKeyEnvelope` 的认证失败 + 明确错误消息表达。
-  - **测试**：macOS 本机全量 **145 个（131 通过 / 14 跳过 / 0 失败）**——新增 `MacKeychainProtectorTests`（6，假主密钥，跨平台可跑）与 `MacKeychainKeyProviderTests`（6，**真 login keychain 集成**：唯一 service 隔离 + 结束即删 + 全程 `suppressUi`，含 `Item_is_discoverable_by_the_security_cli` 用 Apple `security` CLI 交叉验证 service/account/label 真按系统常量落库）；`ConnectionStoreTests` 的两个信封测试已放宽到 macOS（本机 11 个全过、0 跳过）。Linux 侧历史测试见 `SecretKeyEnvelopeTests`（13）、`SecretServiceProtectorTests`（6）、`SecretServiceKeyProviderTests`（5，真 gnome-keyring）。
-  - **仍未完成：UI 接线**（`CreateDefaultAsync` → `ConnectionStore` → 连接列表增删改 → 顶部明文回退告警条）：`ConnectionStore` 目前尚未接入壳工程，Mac 用户还拿不到"连接清单持久化"这层。另`macOS` 侧的授权失败**提示文案**待接线时定（`KeychainUnavailableException.Status` 已带 OSStatus）。
-  - **踩坑（务必保留）**：① DotNet 的 **`Ace4896` 只暴露 `SecretService.SearchItemsAsync`（返回 `(unlocked, locked)` 元组）**，`Collection.SearchItemsAsync` 才返回 `Item[]`；② `Path.GetFileName` 在 Linux 上**不切 `\`**（既有 `SuggestName` 缺陷已修，改用手写分隔符归一化）；③ **`ConnectionStore` 曾误 chmod 配置文件的既有父目录**（`/tmp` 等）——改为**仅对本次新建目录**收紧权限（§2.8 规则 5）；④ **`CFDictionaryCreate` 的回调参数传 NULL 会导致字典不 retain 键值** → 释放 CFString 后 `SecItem*` 读野指针**永久卡死**（macOS 侧头号坑，见 §4）；⑤ `security add -U` **不能**用来改写我们创建的条目来模拟损坏（会换 ACL），造损坏条目用我们自己的 `SecItemUpdate`。
+  - **测试**：macOS 本机全量 **151 个（139 通过 / 12 跳过 / 0 失败）**——M4-4 Core 侧新增 `MacKeychainProtectorTests`（6，假主密钥，跨平台可跑）与 `MacKeychainKeyProviderTests`（6，**真 login keychain 集成**：唯一 service 隔离 + 结束即删 + 全程 `suppressUi`，含 `Item_is_discoverable_by_the_security_cli` 用 Apple `security` CLI 交叉验证 service/account/label 真按系统常量落库）；`ConnectionStoreTests` 的两个信封测试已放宽到 macOS（本机 11 个全过、0 跳过）；UI 接线另加 `MainViewModelTests` 6 个（内存 store 替身）。Linux 侧历史测试见 `SecretKeyEnvelopeTests`（13）、`SecretServiceProtectorTests`（6）、`SecretServiceKeyProviderTests`（5，真 gnome-keyring）。
+  - **UI 接线 ✅（2026-10-05）**：`Core/Connections/IConnectionStore` 抽象（`Protector` + `LoadAsync`/`SaveAsync`，`ConnectionStore` 实现它）；壳层 `IConnectionStoreFactory` + `SecretConnectionStoreFactory`（**整个密钥库探测放 `Task.Run`**——macOS 钥匙串调用是同步阻塞的原生调用，钥匙串被锁时会等授权，绝不能占 UI 线程）；`App.axaml.cs` 在 `window.Opened` 后 `await viewModel.InitializeAsync()`；`MainViewModel` 增 `SavedConnections`/`SelectedSavedConnection`/`OpenSavedConnectionCommand`/`ForgetSavedConnectionCommand`/`ProtectorName`/`SecretsEncrypted`/`SecurityWarning`/`HasSecurityWarning`，新建连接成功后按**名称**去重覆盖并落盘、打开已保存连接不重写文件；`MainWindow.axaml` 左栏加「已保存连接」ComboBox + 打开/移除 + 保护方式标签，顶部明文回退告警条（**普通 `Border` 自绘，见 §2.6 的 InfoBar 更正**）。新增 VM 用例 6 个（载入/明文告警/存储故障不崩启动/新建落盘去重/打开与移除/未选择时提示）。**已知边界**：编辑已保存连接仍走「新建连接」对话框（同名即覆盖）；尚未做启动时自动重连上次连接。
+- **踩坑（务必保留）**：① DotNet 的 **`Ace4896` 只暴露 `SecretService.SearchItemsAsync`（返回 `(unlocked, locked)` 元组）**，`Collection.SearchItemsAsync` 才返回 `Item[]`；② `Path.GetFileName` 在 Linux 上**不切 `\`**（既有 `SuggestName` 缺陷已修，改用手写分隔符归一化）；③ **`ConnectionStore` 曾误 chmod 配置文件的既有父目录**（`/tmp` 等）——改为**仅对本次新建目录**收紧权限（§2.8 规则 5）；④ **`CFDictionaryCreate` 的回调参数传 NULL 会导致字典不 retain 键值** → 释放 CFString 后 `SecItem*` 读野指针**永久卡死**（macOS 侧头号坑，见 §4）；⑤ `security add -U` **不能**用来改写我们创建的条目来模拟损坏（会换 ACL），造损坏条目用我们自己的 `SecItemUpdate`；⑥ **FluentAvaloniaUI 3.1.0 没有 `InfoBar`**（§2.6 已更正），告警条用 `Border` 自绘。
 
 - **依赖审计（M0 起累积）**：见 §2；M4-4 新增 `Ace4896.DBus.Services.Secrets 1.6.0`（MIT）与其传递依赖 `Tmds.DBus.Protocol`（MIT），均**无原生库依赖**；macOS 侧**零新包**（只用系统自带 `Security.framework` / `CoreFoundation`）。
 

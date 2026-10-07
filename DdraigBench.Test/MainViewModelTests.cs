@@ -18,14 +18,25 @@ public sealed class MainViewModelTests
     private static ConnectionProfile SqliteProfile(TempSqliteDatabase db) =>
         new(Path.GetFileName(db.FilePath), DataType.Sqlite, db.ConnectionString);
 
-    private static MainViewModel CreateViewModel(TempSqliteDatabase db) =>
+    private static MainViewModel CreateViewModel(TempSqliteDatabase db, IConnectionStoreFactory? storeFactory = null) =>
         new(
             new StubConnectionDialog(SqliteProfile(db)),
             new FreeSqlFactory(),
             new FreeSqlMetadataExplorer(),
             new StubFilePicker(),
             new StubExportDialog(),
-            new StubDdlViewer());
+            new StubDdlViewer(),
+            storeFactory ?? new StubConnectionStoreFactory(new StubConnectionStore()));
+
+    private static MainViewModel CreateViewModelWithStore(ConnectionProfile? dialogProfile, IConnectionStoreFactory storeFactory) =>
+        new(
+            new StubConnectionDialog(dialogProfile),
+            new FreeSqlFactory(),
+            new FreeSqlMetadataExplorer(),
+            new StubFilePicker(),
+            new StubExportDialog(),
+            new StubDdlViewer(),
+            storeFactory);
 
     [Fact]
     public async Task Open_populates_databases_and_opens_a_query_tab()
@@ -47,7 +58,8 @@ public sealed class MainViewModelTests
     {
         var vm = new MainViewModel(
             new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
-            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer());
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()));
 
         await vm.OpenConnectionAsync();
 
@@ -96,7 +108,8 @@ public sealed class MainViewModelTests
     {
         var vm = new MainViewModel(
             new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
-            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer());
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()));
         vm.NewQuery();
 
         await vm.SelectedTab!.ExecuteAsync();
@@ -114,7 +127,8 @@ public sealed class MainViewModelTests
         var viewer = new StubDdlViewer();
         var vm = new MainViewModel(
             new StubConnectionDialog(SqliteProfile(db)), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
-            new StubFilePicker(), new StubExportDialog(), viewer);
+            new StubFilePicker(), new StubExportDialog(), viewer,
+            new StubConnectionStoreFactory(new StubConnectionStore()));
 
         await vm.OpenConnectionAsync();
 
@@ -140,12 +154,127 @@ public sealed class MainViewModelTests
     {
         var vm = new MainViewModel(
             new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
-            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer());
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()));
         vm.NewQuery();
 
         await vm.PreviewDdlAsync();
 
         Assert.Contains("请先连接", vm.Status);
+    }
+
+    [Fact]
+    public async Task Initialize_loads_saved_connections_and_reports_protector()
+    {
+        var saved = new ConnectionProfile("生产 MySQL", DataType.MySql, "Server=db;Password=pw");
+        var store = new StubConnectionStore([saved]);
+        var vm = CreateViewModelWithStore(null, new StubConnectionStoreFactory(store));
+
+        await vm.InitializeAsync();
+
+        Assert.Equal(saved, Assert.Single(vm.SavedConnections));
+        Assert.True(vm.SecretsEncrypted);
+        Assert.Equal("stub-encrypted", vm.ProtectorName);
+        Assert.False(vm.HasSecurityWarning);
+        Assert.Contains("1 个已保存连接", vm.Status);
+    }
+
+    [Fact]
+    public async Task Plaintext_fallback_raises_a_visible_warning()
+    {
+        var store = new StubConnectionStore(isEncrypted: false);
+        var vm = CreateViewModelWithStore(null, new StubConnectionStoreFactory(store));
+
+        await vm.InitializeAsync();
+
+        Assert.False(vm.SecretsEncrypted);
+        Assert.True(vm.HasSecurityWarning);
+        Assert.Contains("明文", vm.SecurityWarning);
+        Assert.Contains("plaintext", vm.SecurityWarning);
+    }
+
+    [Fact]
+    public async Task Store_failure_does_not_break_startup()
+    {
+        var store = new StubConnectionStore { CreateFailure = new IOException("配置文件不可读") };
+        var vm = CreateViewModelWithStore(null, new StubConnectionStoreFactory(store));
+
+        await vm.InitializeAsync();
+
+        Assert.Empty(vm.SavedConnections);
+        Assert.True(vm.HasSecurityWarning);
+        Assert.Contains("不会持久化", vm.SecurityWarning);
+
+        // 存储不可用时新建连接仍要能用（只是不落盘）。
+        using var db = new TempSqliteDatabase();
+        var withDb = CreateViewModel(db, new StubConnectionStoreFactory(store));
+        await withDb.OpenConnectionAsync();
+
+        Assert.Contains("main", withDb.Databases.Select(d => d.Name));
+    }
+
+    [Fact]
+    public async Task New_connection_is_persisted_and_deduped_by_name()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery("CREATE TABLE t1 (id INTEGER PRIMARY KEY)");
+
+        var store = new StubConnectionStore();
+        var vm = CreateViewModel(db, new StubConnectionStoreFactory(store));
+        await vm.InitializeAsync();
+
+        await vm.OpenConnectionAsync();
+
+        Assert.Single(vm.SavedConnections);
+        Assert.Equal(1, store.SaveCount);
+
+        // 同名再连一次应覆盖而不是追加。
+        await vm.OpenConnectionAsync();
+        Assert.Single(vm.SavedConnections);
+        Assert.Equal(2, store.SaveCount);
+    }
+
+    [Fact]
+    public async Task Saved_connection_opens_and_can_be_forgotten()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery("CREATE TABLE t1 (id INTEGER PRIMARY KEY)");
+        var profile = SqliteProfile(db);
+
+        var store = new StubConnectionStore([profile]);
+        var vm = CreateViewModelWithStore(null, new StubConnectionStoreFactory(store));
+        await vm.InitializeAsync();
+
+        Assert.False(vm.CanOpenSavedConnection);
+        vm.SelectedSavedConnection = profile;
+        Assert.True(vm.CanOpenSavedConnection);
+        Assert.True(vm.CanForgetSavedConnection);
+
+        await vm.OpenSavedConnectionAsync();
+        Assert.Contains("main", vm.Databases.Select(d => d.Name));
+        Assert.Equal(0, store.SaveCount); // 打开已保存连接不重写文件
+
+        await vm.ForgetSavedConnectionAsync();
+        Assert.Empty(vm.SavedConnections);
+        Assert.Null(vm.SelectedSavedConnection);
+        Assert.Empty(store.Saved);
+        Assert.Equal(1, store.SaveCount);
+        Assert.Contains("已移除连接", vm.Status);
+    }
+
+    [Fact]
+    public async Task Saved_connection_commands_report_when_nothing_selected()
+    {
+        var vm = CreateViewModelWithStore(null, new StubConnectionStoreFactory(new StubConnectionStore()));
+        await vm.InitializeAsync();
+
+        await vm.OpenSavedConnectionAsync();
+        Assert.Contains("请先", vm.Status);
+
+        await vm.ForgetSavedConnectionAsync();
+        Assert.Contains("请先", vm.Status);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

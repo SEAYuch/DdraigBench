@@ -18,13 +18,23 @@
                            VerticalScrollBarVisibility="Auto" />
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="8,0,8,6">
-            <TextBlock Text="行数上限" VerticalAlignment="Center" />
-            <NumericUpDown Value="{Binding MaxRows}"
+            <TextBlock Text="每页行数" VerticalAlignment="Center" />
+            <NumericUpDown Value="{Binding PageSize}"
                            Minimum="1"
                            Maximum="100000"
                            Increment="100"
-                           Width="150" />
-            <TextBlock Text="（网格按行虚拟化，只渲染可见行）"
+                           Width="120" />
+            <Button Command="{Binding PreviousPageCommand}"
+                    Content="◀ 上一页"
+                    IsEnabled="{Binding HasPreviousPage}" />
+            <TextBlock Text="{Binding CurrentPage, StringFormat='第 {0} 页'}"
+                       VerticalAlignment="Center"
+                       MinWidth="56"
+                       TextAlignment="Center" />
+            <Button Command="{Binding NextPageCommand}"
+                    Content="下一页 ▶"
+                    IsEnabled="{Binding CanGoToNextPage}" />
+            <TextBlock Text="（服务端 LIMIT/OFFSET 分页；网格按行虚拟化，只渲染可见行）"
                        VerticalAlignment="Center"
                        Opacity="0.7" />
         </StackPanel>

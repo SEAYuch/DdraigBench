@@ -10,7 +10,7 @@ namespace DdraigBench.Core.Connections;
 /// <summary>
 /// 连接清单的落盘/读取。连接串（含口令）经 <see cref="ISecretProtector"/> 加密，名称与方言保持明文以便列表展示。
 /// </summary>
-public sealed class ConnectionStore(string filePath, ISecretProtector protector)
+public sealed class ConnectionStore(string filePath, ISecretProtector protector) : IConnectionStore
 {
     private const int CurrentVersion = 1;
 

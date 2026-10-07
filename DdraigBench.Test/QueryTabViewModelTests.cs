@@ -164,7 +164,53 @@ public sealed class QueryTabViewModelTests
     }
 
     [Fact]
-    public async Task MaxRows_caps_result_and_status_mentions_truncation()
+    public async Task PageSize_slices_result_server_side_and_reports_last_page()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (id) VALUES (1), (2), (3), (4), (5)");
+
+        tab.PageSize = 2;
+        tab.Sql = "SELECT id FROM t ORDER BY id";
+        await tab.ExecuteAsync();
+
+        // 第 1 页：2 行 + 探测到还有下一页
+        Assert.Equal(1L, tab.Rows[0][0]);
+        Assert.Equal(2, tab.Rows.Count);
+        Assert.Equal(1, tab.CurrentPage);
+        Assert.True(tab.HasNextPage);
+        Assert.True(tab.CanGoToNextPage);
+        Assert.False(tab.HasPreviousPage);
+        Assert.Contains("有下一页", tab.Status);
+        Assert.DoesNotContain("已截断", tab.Status);
+
+        await tab.NextPageAsync();
+
+        Assert.Equal(2, tab.CurrentPage);
+        Assert.Equal(3L, tab.Rows[0][0]);
+        Assert.True(tab.HasNextPage);
+
+        await tab.NextPageAsync();
+
+        // 第 3 页：最后 1 行，无下一页
+        Assert.Equal(3, tab.CurrentPage);
+        Assert.Single(tab.Rows);
+        Assert.False(tab.HasNextPage);
+        Assert.False(tab.CanGoToNextPage);
+        Assert.True(tab.HasPreviousPage);
+        Assert.Contains("已是最后一页", tab.Status);
+
+        await tab.PreviousPageAsync();
+        Assert.Equal(2, tab.CurrentPage);
+        Assert.Equal(2, tab.Rows.Count);
+    }
+
+    [Fact]
+    public async Task Executing_again_resets_to_first_page()
     {
         using var db = new TempSqliteDatabase();
         using var factory = new FreeSqlFactory();
@@ -174,11 +220,55 @@ public sealed class QueryTabViewModelTests
         session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
         session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (id) VALUES (1), (2), (3)");
 
-        tab.MaxRows = 2;
+        tab.PageSize = 1;
         tab.Sql = "SELECT id FROM t ORDER BY id";
         await tab.ExecuteAsync();
+        await tab.NextPageAsync();
+        Assert.Equal(2, tab.CurrentPage);
 
+        await tab.ExecuteAsync();
+
+        Assert.Equal(1, tab.CurrentPage);
+        Assert.Equal(1L, tab.Rows[0][0]);
+    }
+
+    [Fact]
+    public async Task User_supplied_limit_is_left_untouched()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (id) VALUES (1), (2), (3)");
+
+        tab.PageSize = 100;
+        tab.Sql = "SELECT id FROM t ORDER BY id LIMIT 2";
+        await tab.ExecuteAsync();
+
+        // 用户自己限了 2 行：不再叠加我们的分页，也没有"已截断"（结果本身就是 2 行）。
         Assert.Equal(2, tab.Rows.Count);
-        Assert.Contains("已截断", tab.Status);
+        Assert.False(tab.HasNextPage);
+        Assert.DoesNotContain("第 ", tab.Status);
+        Assert.DoesNotContain("已截断", tab.Status);
+    }
+
+    [Fact]
+    public async Task Non_query_statement_is_executed_as_is()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
+
+        tab.Sql = "INSERT INTO t (id) VALUES (7), (8)";
+        await tab.ExecuteAsync();
+
+        Assert.Empty(tab.Rows);
+        Assert.Contains("影响 2 行", tab.Status);
+        Assert.DoesNotContain("第 ", tab.Status);
     }
 }
