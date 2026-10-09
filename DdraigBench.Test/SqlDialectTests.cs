@@ -48,6 +48,21 @@ public sealed class SqlDialectTests
     }
 
     [Fact]
+    public void MySql_escapes_backslashes_because_they_are_escape_characters()
+    {
+        // 默认 sql_mode 下 MySQL 的反斜杠是转义符，不翻倍就会改写数据（Windows 路径、JSON 里的 \n）
+        var mysql = SqlDialects.Get(DataType.MySql);
+
+        Assert.Equal(@"'a\\b'", mysql.FormatLiteral(@"a\b"));
+        Assert.Equal(@"'it''s'", mysql.FormatLiteral("it's"));
+        Assert.Equal(@"'a\\''b'", mysql.FormatLiteral(@"a\'b"));
+
+        // 标准 SQL 语义的方言不动反斜杠
+        Assert.Equal(@"'a\b'", SqlDialects.Get(DataType.Sqlite).FormatLiteral(@"a\b"));
+        Assert.Equal(@"'a\b'", SqlDialects.Get(DataType.PostgreSQL).FormatLiteral(@"a\b"));
+    }
+
+    [Fact]
     public void Binary_literal_differs_for_postgres()
     {
         var bytes = new byte[] { 0x68, 0x69 };

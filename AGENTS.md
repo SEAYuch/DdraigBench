@@ -11,7 +11,7 @@
 **DdraigBench** = Avalonia + FreeSql 的跨平台数据库 GUI 客户端（对标 Navicat / DBeaver）。
 名字：威尔士语 *y ddraig*（红龙 Y Ddraig Goch → 亚瑟 → Avalon → Avalonia）+ Bench。双写 dd 是威尔士语定冠词后的软化变位，拼写必须保持 **Ddraig**，勿"纠正"为 Draig。
 
-技术基线：net10.0 · Avalonia 12.1.2 · FluentAvaloniaUI 3.1.0（Fluent/WinUI 主题）· FluentIcons.Avalonia.Fluent 2.1.341 · ReactiveUI 24.2.0 · FreeSql 3.5.311 · xunit.v3 4.0.1。
+技术基线（2026-10-08 按 csproj 实查校正，勿再写记忆里的旧版本）：net10.0 · Avalonia 12.1.3 · FluentAvaloniaUI 3.1.0（Fluent/WinUI 主题）· FluentIcons.Avalonia.Fluent 2.1.343 · ReactiveUI.Avalonia 12.1.6（→ ReactiveUI 24.2.0）· FreeSql 3.5.311 · xunit.v3 4.0.1。
 
 **架构总原则：FreeSql 只当「方言引擎 + 元数据引擎」，不当 ORM 用。** FreeSql 负责 22 方言的元数据 SQL / 类型映射 / 分页；我们负责 GUI 语义（会话、树、网格、编辑器）。FreeSql 覆盖不到的（触发器/函数/分区/事件元数据），抄对应 Provider 的 MIT 源码自建 dialect 层补齐。
 
@@ -38,9 +38,9 @@
 
 | 包 | 版本 | 作用 | 判定 |
 |---|---|---|---|
-| Avalonia / .Desktop / .Themes.Fluent / .Fonts.Inter | 12.1.2 | 框架四件套 | ✅ 统一 12.1.x |
+| Avalonia / .Desktop / .Themes.Fluent / .Fonts.Inter | 12.1.3 | 框架四件套 | ✅ 统一 12.1.x |
 | **FluentAvaloniaUI** | 3.1.0 | WinUI3 风格控件 + Fluent v2 主题（取代 `<FluentTheme/>`） | ✅ MIT，nuspec 钉 Avalonia ≥12.1.0；详见 §2.6 |
-| **FluentIcons.Avalonia.Fluent** | 2.1.341 | Fluent UI System Icons 图标控件（配对 FluentAvalonia） | ✅ MIT，nuspec 钉 FluentAvaloniaUI ≥3.0.0；详见 §2.6 |
+| **FluentIcons.Avalonia.Fluent** | 2.1.343 | Fluent UI System Icons 图标控件（配对 FluentAvalonia） | ✅ MIT，nuspec 钉 FluentAvaloniaUI ≥3.0.0；详见 §2.6 |
 | Avalonia.Controls.DataGrid | 12.1.2 | 结果集网格（D1） | ✅ 显式引用，家族统一 12.1.x |
 | **Avalonia.AvaloniaEdit** | 12.0.0 | SQL 编辑器（M3-3，官方 AvaloniaUI 移植） | ✅ MIT，nuspec 钉 Avalonia ≥12.0.0；详见 §2.7 |
 | AvaloniaUI.DiagnosticsSupport | 2.2.3 | 调试面板 | ✅ 已正确限定 Debug-only |
@@ -48,8 +48,8 @@
 | **FreeSql.Provider.Sqlite** | 3.5.311 | SQLite 方言 + 驱动（M1 黄金通道）→ 钉 System.Data.SQLite.Core 1.0.119（自带原生 e_sqlite3） | ✅ MIT；主工程 / Core / 测试工程三处均引用 |
 | **FreeSql.Provider.MySqlConnector** | 3.5.311 | MySQL/MariaDB 方言 + 驱动（M2）→ 钉 MySqlConnector 2.5.0 | ✅ MIT；主/测/Core 三处均引用 |
 | **FreeSql.Provider.PostgreSQL** | 3.5.311 | PostgreSQL 方言 + 驱动（M2）→ 钉 Npgsql.LegacyPostgis / Npgsql.NetTopologySuite 5.0.18 + Newtonsoft.Json 13.0.1 | ✅ MIT；主/测/Core 三处均引用 |
-| ReactiveUI.Avalonia | 12.1.2 | MVVM 桥 → ReactiveUI 24.2.0 + Splat 21.0.0 | ✅ 保留 |
-| ReactiveUI.Avalonia.Autofac | 12.1.2 | Autofac 容器桥 → Splat.Autofac | ⚠️ **未接线**：Program/App 无任何 Autofac 配置，纯死重 |
+| ReactiveUI.Avalonia | 12.1.6 | MVVM 桥 → ReactiveUI 24.2.0 + Splat 21.0.0 | ✅ 保留 |
+| ReactiveUI.Avalonia.Autofac | 12.1.6 | Autofac 容器桥 → Splat.Autofac | ⚠️ **未接线**：Program/App 无任何 Autofac 配置，纯死重 |
 
 ### 2.2 Provider 引入策略（M1 装 Sqlite；M2 装 MySqlConnector + PostgreSQL；SqlServer 待靶机）
 
@@ -87,15 +87,15 @@ Provider 的驱动版本被 FreeSql 钉死，上游不动则无法升级：
 
 - **D1 结果网格控件**：✅ **已解决**（2026-09-18）。显式引入 `Avalonia.Controls.DataGrid 12.1.2`（家族统一 12.1.x）。FluentAvaloniaUI 亦传递依赖它（≥12.1.0），显式引用同时满足"用了哪个控件就显式引用哪个包"。
 - **D2 DI 容器**：a) 接线 Autofac；b) 删除 ReactiveUI.Avalonia.Autofac，用 Splat 默认定位器 `Locator.CurrentMutable.RegisterConstant(...)`。**默认取 b**；服务多于 ~20 个再迁 a。
-- **D3 主题与图标栈**：✅ **已解决**（2026-09-18）。取 FluentAvaloniaUI 3.1.0 + FluentIcons.Avalonia.Fluent 2.1.341，考查表、决策与备选见 §2.6。
+- **D3 主题与图标栈**：✅ **已解决**（2026-09-18）。取 FluentAvaloniaUI 3.1.0 + FluentIcons.Avalonia.Fluent 2.1.343，考查表、决策与备选见 §2.6。
 
 ### 2.5 Test 工程
 
-**xunit.v3 4.0.1** / Test.Sdk 18.10.1 / coverlet 10.0.1 ✅（2026-09-18 由 `xunit 2.9.3` 升为 `xunit.v3 4.0.1`，与 Pathfinder1eHelper 对齐）。`xunit.v3` 要求测试工程 `<OutputType>Exe</OutputType>`，并 `NoWarn xUnit1051` 以保零告警。**已增补（M1-1）**：`FreeSql` + `FreeSql.Provider.Sqlite` 3.5.311，以及对 `DdraigBench.Core` 的 ProjectReference——集成测试用临时文件 SQLite（`Path.GetTempPath`），无需 docker。另增对 `DdraigBench` 壳工程的 ProjectReference，以便纯逻辑测 ViewModel（§7，不启 Avalonia）。
+**xunit.v3 4.0.1** / Test.Sdk 18.10.1 / coverlet.collector 10.1.0 ✅（2026-09-18 由 `xunit 2.9.3` 升为 `xunit.v3 4.0.1`，与 Pathfinder1eHelper 对齐）。`xunit.v3` 要求测试工程 `<OutputType>Exe</OutputType>`，并 `NoWarn xUnit1051` 以保零告警。**已增补（M1-1）**：`FreeSql` + `FreeSql.Provider.Sqlite` 3.5.311，以及对 `DdraigBench.Core` 的 ProjectReference——集成测试用临时文件 SQLite（`Path.GetTempPath`），无需 docker。另增对 `DdraigBench` 壳工程的 ProjectReference，以便纯逻辑测 ViewModel（§7，不启 Avalonia）。
 
 > ⚠️ 测试工程是 **MTP 应用**（`xunit.v3` + `Microsoft.Testing.Platform`）。.NET 10 下 `dotnet test <sln>` 的旧写法会报错，必须走 MTP 模式（§9 的 `global.json`）。**实测 MTP + xunit.v3 4.0.1 可正常发现并运行（25 绿）**；Pathfinder1eHelper 则走 VSTest 通道（其测试工程设 `IsTestingPlatformApplication=false`）——两种通道**互斥**，本项目选 MTP + `global.json`。
 
-另增 **`Avalonia.Headless 12.1.2`**（仅测试工程；基础包、无 xunit 耦合）+ xUnit v3 `AssemblyFixture` 启动 headless 平台，用于控件级 UI 单测（§7 / `DdraigBench.Test/TestAppFixture.cs`）。
+另增 **`Avalonia.Headless 12.1.3`**（仅测试工程；基础包、无 xunit 耦合）+ xUnit v3 `AssemblyFixture` 启动 headless 平台，用于控件级 UI 单测（§7 / `DdraigBench.Test/TestAppFixture.cs`）。
 
 ### 2.6 主题与图标栈（已定，2026-09-18 nuspec 实查）
 
@@ -103,10 +103,10 @@ Provider 的驱动版本被 FreeSql 钉死，上游不动则无法升级：
 
 | 包 | 版本 | 许可证 | 依赖的 Avalonia 线 | 判定 |
 |---|---|---|---|---|
-| Avalonia.Themes.Fluent | 12.1.2 | MIT | 内置（框架四件套） | 基线保留，但 `<FluentTheme/>` 元素已移除（见下） |
+| Avalonia.Themes.Fluent | 12.1.3 | MIT | 内置（框架四件套） | 基线保留，但 `<FluentTheme/>` 元素已移除（见下） |
 | **FluentAvaloniaUI**（amwx） | 3.1.0 | MIT | **≥12.1.0** ✅ | ✅ **采用**。WinUI3 控件：NavigationView / TabView / ContentDialog / SettingsExpander / TaskDialog（⚠️ **InfoBar 实测解析不到**：3.1.0 的 `FluentAvalonia.UI.Controls` 下无该类型，XAML 编译报 AVLN2000——2026-10-04 实测，故告警条用普通 `Border` 自绘） |
-| **FluentIcons.Avalonia.Fluent**（davidxuang） | 2.1.341 | MIT | 钉 FluentAvaloniaUI **≥3.0.0** ✅ | ✅ **采用**。微软 Fluent UI System Icons（Regular/Filled/Color），与主题同设计语言 |
-| FluentIcons.Avalonia | 2.1.341 | MIT | ≥12.0.0 ✅ | 备选：仅用内置 FluentTheme 时选它（非 `.Fluent` 变体） |
+| **FluentIcons.Avalonia.Fluent**（davidxuang） | 2.1.343 | MIT | 钉 FluentAvaloniaUI **≥3.0.0** ✅ | ✅ **采用**。微软 Fluent UI System Icons（Regular/Filled/Color），与主题同设计语言 |
+| FluentIcons.Avalonia | 2.1.343 | MIT | ≥12.0.0 ✅ | 备选：仅用内置 FluentTheme 时选它（非 `.Fluent` 变体） |
 | Material.Icons.Avalonia | 3.0.2 | MIT | ≥12.0.0 ✅ | 兼容但属 Material 体系，与 Fluent 混用风格割裂，不用 |
 | Lucide.Avalonia | 0.2.22 | MIT | ≥11.3.17 | 0.x 早期项目、笔画风格，非 Fluent，不用 |
 | Projektanker.Icons.Avalonia | 9.6.2 | MIT | ≥11.2.8，netstandard2.0 | ⚠️ 为 Avalonia 11 编写、2025-05 后停更，**不用** |
@@ -119,14 +119,14 @@ Provider 的驱动版本被 FreeSql 钉死，上游不动则无法升级：
 3. 图标包与主题包必须配对：上 FluentAvalonia 就用 `.Fluent` 变体（它钉 FluentAvaloniaUI ≥3.0.0）；只用内置 FluentTheme 才用裸 `FluentIcons.Avalonia`。
 4. `Avalonia.Themes.Fluent` 包保留在框架四件套（FluentAvaloniaTheme 未声明依赖它，属可精简项，留待后续评估，勿擅动）。
 5. 主题/图标只允许出现在 `DdraigBench` 壳工程（View 层），Core 保持零 UI 依赖（§3）。
-6. 已知传递依赖 `Avalonia.Controls.ColorPicker 12.1.0`（FluentAvalonia 钉 ≥12.1.0）与主族 12.1.2 存在 patch 级差，semver 兼容，暂不处理。
+6. 已知传递依赖 `Avalonia.Controls.ColorPicker 12.1.0`（FluentAvalonia 钉 ≥12.1.0）与主族 12.1.3 存在 patch 级差，semver 兼容，暂不处理。
 7. 自定义控件若派生自主题化控件（`DataGrid` 等），**必须** `protected override Type StyleKeyOverride => typeof(基类);`——否则 `ControlTheme` 按派生类型查不到，模板缺失、整块不渲染且无报错（M1 实测）。能不改派生就优先用**附加属性**（M1 的结果网格即如此，见 `Controls/ResultColumns.cs`）。
 
 ### 2.7 SQL 编辑器包（M3 候选，2026-09-18 nuspec 实查）
 
 | 包 | 版本 | 许可证 | 依赖的 Avalonia 线 | 判定 |
 |---|---|---|---|---|
-| **Avalonia.AvaloniaEdit**（AvaloniaUI 官方移植） | 12.0.0 | MIT | **≥12.0.0**（net10.0） | ✅ **采用**（M3-3 已落地，与 12.1.2 兼容），仅额外依赖 `Avalonia`；需显式引入其主题（§2.6） |
+| **Avalonia.AvaloniaEdit**（AvaloniaUI 官方移植） | 12.0.0 | MIT | **≥12.0.0**（net10.0） | ✅ **采用**（M3-3 已落地，与 12.1.3 兼容），仅额外依赖 `Avalonia`；需显式引入其主题（§2.6） |
 | AvaloniaEdit.TextMate | 12.0.0 | MIT | 钉 Avalonia.AvaloniaEdit 12.0.0 + Avalonia ≥12.0.0 | 备选：SQL 语法高亮（会再引 TextMateSharp 2.0.3 + TextMateSharp.Grammars 2.0.3），留待后续打磨 |
 
 > §8 要求"引入前先验证与 Avalonia 12.1 兼容版本"，本节即该核查结果。
@@ -193,8 +193,8 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 │   │   ├── ExportDialogView.axaml      # 导出对话框（M4-2）
 │   │   └── DdlView.axaml               # DDL 预览窗口（M4-3）
 │   └── ViewModels/              # 全部 ReactiveObject，构造注入 Core 接口
-│       ├── MainViewModel        # 树 + Tab 集合 + 全局命令 + DDL 预览 + 已保存连接清单/明文告警（M1-6 / M4-2 / M4-3 / M4-4 接线）
-│       ├── ConnectionTreeNodeViewModel  # 左树节点模型（惰性加载子节点，带 Database，M1-6 / M4-3）
+│       ├── MainViewModel        # 树 + Tab 集合 + 全局命令 + DDL 预览 + 已保存连接清单/明文告警（M1-6 / M4-2 / M4-3 / M4-4 / M5-2 模式层接线）
+│       ├── ConnectionTreeNodeViewModel  # 左树节点模型（惰性加载子节点；Container = 库名或 PG 模式名，M1-6 / M4-3 / M5-2 改名）
 │       ├── QueryTabViewModel    # 语句执行、取消、事务、结果集/状态、导出（M1-6 / M3 / M4-2）
 │       ├── ConnectionDialogViewModel    # Provider 参数表 + 校验 + BuildProfile（M2-b）
 │       ├── ExportDialogViewModel        # 导出保存路径 + INSERT 目标表名（M4-2）
@@ -227,10 +227,10 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 │   │   └── ISessionManager.cs        # 生命周期、并发上限、关闭清理 → M3
 │   ├── Metadata/
 │   │   ├── IMetadataExplorer.cs      # 树的统一元数据 API（签名见 §4，M1-4 已落地）
-│   │   ├── DbObjectKind.cs / DbObjectInfo.cs / DbColumnInfo.cs   # 元数据模型（M1-4）
-│   │   ├── FreeSqlMetadataExplorer.cs# 包装 IDbFirst（M1-4：Table/View/Column；M4-3：GetDdlAsync）
-│   │   ├── DdlGenerator.cs       # DbTableInfo → CREATE TABLE/INDEX（M4-3，纯逻辑）
-│   │   └── CatalogQueries/           # 触发器/函数/分区/视图定义等 IDbFirst 缺口的补齐 SQL → 后续
+│   │   ├── DbObjectKind.cs / DbObjectInfo.cs / DbColumnInfo.cs   # 元数据模型（M1-4；DbObjectInfo.Definition 为 M5-1、DbObjectKind.Schema 为 M5-2 追加）
+│   │   ├── FreeSqlMetadataExplorer.cs# 两条通道：IDbFirst（表/视图/列，M1-4）+ 目录查询（触发器/例程/原始定义，M5-1）
+│   │   ├── CatalogQueryExecutor.cs   # 目录 SQL 执行 + 按列名映射（internal，M5-1）
+│   │   └── DdlGenerator.cs       # DbTableInfo → CREATE TABLE/INDEX（M4-3，纯逻辑；作原始定义取不到时的回落）
 │   ├── Querying/
 │   │   ├── QueryResult.cs            # Columns + Rows(object[][]) + Affected + 时长 + Truncated
 │   │   ├── QueryRunner.cs            # MasterPool 原始连接执行 + 流式分批读取（见 §4 实测）
@@ -239,7 +239,11 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 │   └── Dialects/
 │       ├── ISqlDialect.cs / SqlDialectBase.cs   # 方言钩子：标识符引用 / 分页 / 字面量渲染（M4-1）
 │       ├── SqliteDialect.cs / MySqlDialect.cs / PostgreSqlDialect.cs
-│       └── SqlDialects.cs            # DataType → ISqlDialect 工厂
+│       ├── SqlDialects.cs            # DataType → ISqlDialect 工厂
+│       └── CatalogQueries/           # ★ IDbFirst 缺口的补齐 SQL（M5-1）：每库一组，只造 SQL 不执行
+│           ├── ICatalogQueries.cs    # 能力矩阵 + 对象清单/视图定义/表定义 SQL（列名契约见类注释）
+│           ├── SqliteCatalogQueries.cs / MySqlCatalogQueries.cs / PostgreSqlCatalogQueries.cs
+│           └── CatalogQuerySets.cs   # DataType → ICatalogQueries 工厂（与 SqlDialects 同构）
 └── DdraigBench.Test/            # Core 的全部单测/集成测（SQLite 黄金通道）
 ```
 
@@ -255,14 +259,22 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 // 元数据：左侧树的唯一数据源。任何树节点懒加载都走它。
 public interface IMetadataExplorer
 {
+    // 可浏览的「库」。SQLite/MySQL 走 IDbFirst.GetDatabases()；PostgreSQL 收窄为当前库
+    //   （一个连接只能看到所连库，见 §4 实测 / M5-2）。
     Task<IReadOnlyList<string>> GetDatabasesAsync(DbSession s, CancellationToken ct = default);
-    // M1 已实现 Table/View；Index/ForeignKey/StoredProcedure/Trigger/Function 待补齐（§6.2）
+    // Table/View ← IDbFirst；Schema/Trigger/StoredProcedure/Function ← 目录查询（M5-1 / M5-2）：
+    //   方言没有这类对象时返回「空集」而非报错（如 SQLite 的 Schema/存储过程）；
+    //   不是"容器级对象集合"的 kind（Column/Index/ForeignKey/Database）抛 NotSupportedException。
+    //   ⚠️ database 参数实为「容器」：库级对象传库名，PG 的模式级对象传模式名。
     Task<IReadOnlyList<DbObjectInfo>> GetObjectsAsync(DbSession s, string database,
         DbObjectKind kind, CancellationToken ct = default);
     // M1-4 追加：列不属于数据库级签名，单列一法（对应 §6.3 的"表→列"级）
     Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(DbSession s, string database, string table,
         CancellationToken ct = default);
-    // M4-3 追加：元数据 → DDL 预览；对象不存在返回 null。视图/触发器/函数定义 IDbFirst 不返回
+    // M4-3 追加、M5-1 改优先级：DDL 预览。**原始定义 > 按元数据重建**——
+    //   表：方言能给出原始建表语句就用它（当前仅 SQLite），否则回落 DdlGenerator；
+    //   视图：目录查询取真实定义（SQLite/MySQL/PG 三方均可），取不到才回落占位；
+    //   触发器/函数/存储过程：按名在目录里找，拿得到 definition 就给，否则 null。对象不存在返回 null。
     Task<string?> GetDdlAsync(DbSession s, string database, string table, CancellationToken ct = default);
 }
 
@@ -309,6 +321,28 @@ public sealed class DbSession : IAsyncDisposable
   - `kSecUseAuthenticationUI=Fail`（= `kSecUseAuthenticationUIFail`，`SecItem.h:1066` 起 deprecated 但仍可用）能让"条目被 ACL 拦下"立刻失败而不是等授权框；**注意它只抑制条目授权、不抑制钥匙串解锁**，故钥匙串被锁时 SecItem 仍可能阻塞调用线程——壳工程接线时**必须在后台线程调用**。
   - 本机 `security find/add/delete-generic-password` 与我们的 SecItem 实现**互为独立参照**：集成测试 `Item_is_discoverable_by_the_security_cli` 用 CLI 反查我们写入的条目（校验 service/account/label 真按系统常量落库，用户能在「钥匙串访问」里搜到并删除）。反过来，**不要用 `security add -U` 改写我们创建的条目**去模拟损坏——它会重建条目并换掉 ACL，随后 SecItem 返回值不可预期（实测得到 `errSecItemNotFound` 而非 DuplicateItem/AuthFailed）；造损坏条目要用我们自己的 `SecItemUpdate`。
   - `kSecAttrAccessible` 在传统（文件）钥匙串上**不生效**（`SecItem.h:89`：macOS 上仅当配 `kSecAttrSynchronizable` 或 `kSecUseDataProtectionKeychain` 才生效），故不设；数据保护钥匙串则需要 keychain-access-groups 授权，未签名构建直接 `errSecMissingEntitlement`。
+- **M5-1 目录查询实测结论（2026-10-08）**：
+  - **FreeSql 的 PostgreSQL 实现自相矛盾**（从 `FreeSql.Provider.PostgreSQL.dll` 反查 SQL 字面量确认，非猜测）：
+    `GetDatabases()` = `select datname from pg_database where datname not in ('template1','template0')`（**库名**），
+    而 `GetTablesByDatabase(x)` 却按 `pg_namespace.nspname = x`（**模式名**）过滤。
+    故 PG 下把 `GetDatabasesAsync()` 的首项回喂给 `GetTablesByDatabase()` **通常一个表都取不到**（除非恰好存在与库同名的模式）——既有缺陷，M2 集成测只断言了"能返回非空库名"，没覆盖这一层。
+    目录查询因此统一按「**schema 语义**」实现（与 `GetTablesByDatabase` 对齐），靶机测试用 `SELECT current_schema()` 取容器名。
+    > M5-2 已修：PG 的库清单收窄为当前库 + 补上模式层，见下。
+  - MySQL 用 `information_schema.TRIGGERS / ROUTINES / VIEWS`，PG 用 `pg_trigger / pg_proc / pg_get_viewdef`。PG 的 `pg_proc.prokind`（`'f'`=函数 / `'p'`=存储过程）**要求 PG ≥ 11**（10 及更早是 `proisagg`/`proiswindow`）。
+  - **SQLite 的 `sqlite_master.sql` 是原始语句**（建表/视图/触发器都在内），故 SQLite 的定义类缺口一次读原文全解决：`AUTOINCREMENT`、内联 `UNIQUE`、`CHECK`、`COLLATE` 都保留（§6.2 的①②③）。**保真度高于按元数据重建**，所以 `GetDdlAsync` 改成"原始定义优先"。副作用：SQLite 的表 DDL 预览不再输出 `DdlGenerator` 的加引号重建版（那反而是有损的）。原始语句通常**不带结尾分号**，需补上才能直接复制执行。
+  - `sqlite_master` 可加附加库限定：`"main".sqlite_master` 合法（本层所有 SQLite 查询都这样写，`main` 来自 `QuoteIdentifier`）。
+  - **MySQL 的字面量必须转义反斜杠**：默认 `sql_mode` 下 `\` 是转义符（`NO_BACKSLASH_ESCAPES` 未开）。原先 `SqlDialectBase.Quote` 只翻倍单引号，含 `\` 的数据（Windows 路径、JSON 里的 `\n`）会在导出 INSERT 与库名过滤里被**静默改写**——M5-1 修（`MySqlDialect` 覆写 `Quote`），并加了回归测。假设：`NO_BACKSLASH_ESCAPES` 未开启。
+  - `QueryRunner` 把 SQL 异常收敛进 `QueryResult.Error`（不抛）。**元数据场景必须把它重新抛出去**（`CatalogQueryExecutor` 负责），否则树会"静默空"、用户看不出是权限不足还是真没对象。
+  - 树节点展开是 **fire-and-forget**（`ConnectionTreeNodeViewModel` 里 `_ = _loadChildren(this)`），异常会变成未观察的任务异常被吞。故 `MainViewModel` 的各 loader 都就地 try/catch 收敛成状态栏文案；回归测 `Expand_failure_is_reported_instead_of_crashing_the_tree`。
+- **M5-2 模式层实测结论（2026-10-08）**：
+  - **「库」这一层在不同方言的含义差异极大**，必须分开处理，否则树形就是错的：
+    SQLite 一个连接可 `ATTACH` 多个库（`IDbFirst.GetDatabases()` 给 main + 附加库）；MySQL 的库 == 模式且**可跨库**（`information_schema` 与 `GetTablesByDatabase(table_schema=…)` 都不受"当前库"限制，`USE` 可切换）；**PG 一个连接只能看到所连库内**的对象（跨库要换连接或 dblink/FDW）。
+    故 `ICatalogQueries.ConnectionIsBoundToSingleDatabase` 只对 PG 为真，`GetDatabasesAsync` 相应收窄为 `SELECT current_database()`——避免把"看得见打不开"的库列进树。
+  - 模式层作为**普通对象种类**接入（`DbObjectKind.Schema`），复用 M5-1 的目录查询通道（`Supports`/`BuildObjectsQuery`），因此**不需要给 `IMetadataExplorer` 加新方法**。SQLite/MySQL 返回空集，树据此判断"不加这一层"。
+  - PG 的模式清单要滤掉系统命名空间：`pg_catalog` / `information_schema` / `pg_toast`，以及 `pg_temp%` / `pg_toast_temp%`（临时对象的模式，形如 `pg_temp_3`）。
+  - `pg_namespace` 本就只含当前库的模式，**所以模式清单 SQL 与 `database` 参数无关**（实现里刻意忽略它，并有测守着这一点）。
+  - 树节点的容器字段由 `Database` **改名 `Container`**：PG 下对象的容器是**模式名**而非库名，沿用旧名会把 DDL 预览的入参传错。改名后 VM 侧只有 `CanPreviewDdl` / `PreviewDdlAsync` / 三个 loader 用到，XAML 未绑定它。
+  - 树的层级逻辑**不依赖靶机也能测透**：`ScriptedMetadataExplorer` 替身直接编排「库→模式→对象」的形状，两条分支（有模式 / 无模式）都有 VM 级回归。
 
 ---
 
@@ -325,6 +359,7 @@ public sealed class DbSession : IAsyncDisposable
 - 结果网格用**普通 `DataGrid` + 附加属性** `ResultColumns.Headers`（`Controls/ResultColumns.cs`）按列头动态生成列；单元格用 `DataGridTemplateColumn` + `FuncDataTemplate<object?[]>` 从行数组直取（**不经绑定引擎**）。**不派生 `DataGrid`**。
 - （教训）**派生自 Avalonia 主题化控件的自定义控件必须 override `StyleKeyOverride`**，否则 `ControlTheme` 按派生类型查不到 → 模板缺失 → **整块不渲染且无报错**。M1 首选改用**附加属性**正是为了避开这类派生陷阱。
 - `TextEditor.Text`（AvaloniaEdit）**不是 `AvaloniaProperty`**，不能直接绑定（README 也只演示字面量）→ 用附加属性 `Controls/EditorText.Text` 双向同步（M3-3）。
+- 左树展开是 **fire-and-forget**（`ConnectionTreeNodeViewModel` 里 `_ = _loadChildren(this)`）→ loader 内部**必须** try/catch 并把失败写进 `Status`（M5-1），否则元数据查询失败会变成未观察的任务异常被静默吞掉，用户只看到"树是空的"。
 
 §4 的服务契约经 Splat 或 Autofac 注入 ViewModel 构造函数（见 §2.4 D2）。
 
@@ -333,13 +368,17 @@ public sealed class DbSession : IAsyncDisposable
 ## 6. 元数据层策略
 
 1. **能用 IDbFirst 就不手写**：`GetDatabasesAsync` → `IDbFirst.GetDatabases()`；表/列/主键/索引/外键/视图/存储过程 → `IDbFirst.GetTablesByDatabase()` 的 `DbTableInfo`（含 `IndexesDict` / `ForeignsDict`）。这是白嫖 22 方言的最大头。
-2. **IDbFirst 缺口**（实测确认无 API）：**触发器、函数、事件、分区**。补齐方式：`Dialects/CatalogQueries/` 每库一组 SQL，素材**直接抄 FreeSql 对应 Provider 的 MIT 源码**（仓库 dotnetcore/FreeSql，保留版权声明）。
-   - ⚠️ **M4-3 实测补充缺口**：
-     ① **视图定义**拿不到（`GetDdlAsync` 对 `DbTableType.VIEW` 只输出提示 + 列结构）；
-     ② **SQLite 的 `AUTOINCREMENT` 识别不出**——`INTEGER PRIMARY KEY AUTOINCREMENT` 的 `AUTOINCREMENT` 不在声明类型里，FreeSql 不填 `IsIdentity`，只存在于 `sqlite_master.sql`；
-     ③ 唯一约束（`UniquesDict`）当前不单独输出（其唯一索引一般已含于 `IndexesDict`，`IsUnique=true`）。
-     以上都归入 `CatalogQueries/` 的后续工作（`SELECT sql FROM sqlite_master` / `pg_get_viewdef` / `SHOW CREATE VIEW`）。
-3. 树节点惰性加载：展开才查子级；库→模式→表→列 四级各自 `DbObjectKind`。
+2. **IDbFirst 缺口 → `Dialects/CatalogQueries/`**（M5-1 落地；早前 §3 曾把该目录写为 `Metadata/CatalogQueries/`，**以 §6.2 为准，实际在 `Dialects/` 下**——它绑方言、用 `ISqlDialect` 引用，放方言侧才对）。
+   - 设计：**只造 SQL 不执行**（`CatalogQueryExecutor` 执行 + 按列名映射）。好处是无靶机也能对 SQL 形状/能力矩阵/转义做纯逻辑单测。
+   - `database` 参数语义 = **schema 语义**（与 `FreeSql.DbFirst.GetTablesByDatabase` 对齐）：SQLite = 附加库名、MySQL = schema、PG = schema（PG 的 `GetDatabases()` 返回库名，两者不同源，M5-2 起由「库清单收窄 + 模式层」处理，见 §4）。
+3. **缺口状态（2026-10-08）**：
+   - ✅ ① **视图定义**：SQLite 读 `sqlite_master.sql` 原文；MySQL 用 `information_schema.VIEWS.VIEW_DEFINITION` + `ComposeViewDdl` 补前缀；PG 用 `pg_get_viewdef()` + 补前缀。
+   - ✅ ② **SQLite `AUTOINCREMENT`**：改走"原始定义优先"，不再依赖 `IsIdentity`（`INTEGER PRIMARY KEY`（无 AUTOINCREMENT）**不得**输出 `AUTOINCREMENT`——那会改变 rowid 复用语义）。
+   - ✅ ③ **唯一约束**：内联 `UNIQUE` / `CHECK` / `COLLATE` 随原始语句一并保真（按元数据重建必丢，因为 SQLite 把它们落在 `sqlite_autoindex_*` 里而 `DdlGenerator` 要跳过内部索引）。
+   - ✅ **触发器 / 函数 / 存储过程清单**：三方方言均可列；SQLite 的触发器还能直接给出完整定义。
+   - ✅ **模式层（M5-2）**：`DbObjectKind.Schema` + PG 的 `pg_namespace` 清单；树变成「库 → 模式 → 对象」，SQLite/MySQL 保持「库 → 对象」。PG 的库清单同时收窄为当前库。
+   - ⏳ **仍缺**（后续）：事件（MySQL `information_schema.EVENTS`）与分区（`information_schema.PARTITIONS`）；MySQL/PG 的**触发器与例程定义**（需 `SHOW CREATE TRIGGER` / `pg_get_functiondef`，或按 `information_schema.TRIGGERS`/`PARAMETERS` 逐列拼装）；MySQL 的表定义（只能走 `SHOW CREATE TABLE`，多列且列名不固定，未纳入契约）；PG 物化视图（`relkind='m'`）。
+4. 树节点惰性加载：展开才查子级。**实际层级**：SQLite/MySQL = 「库 → 表/视图/触发器/存储过程/函数 → 列」，PostgreSQL = 「库 → 模式 → 表/视图/触发器/存储过程/函数 → 列」。库节点下**平铺**（不做"表/视图"分组文件夹），这是既有取舍，改动前先想清楚。§6.3 原本写的"库→模式→表→列四级"是目标形态，M5-2 起 PG 已达成。
 
 ---
 
@@ -360,12 +399,13 @@ public sealed class DbSession : IAsyncDisposable
 |---|---|
 | Core.Services | xunit 单测；DB 依赖用 **SQLite 临时文件**（`Path.GetTempFileName` 建库），不 mock IFreeSql（集成式更真） |
 | GPL 防回归 | 静态断言（任何 `*.csproj` 不含 `FreeSql.All` / `FreeSql.Provider.MySql` / `MySql.Data`；输出目录无对应 dll）+ **驱动集真测试**：`Assembly.Load("MySqlConnector")` 成功、`MySql.Data` / `FreeSql.Provider.MySql` 失败，MySQL/PG 均可建出 `IFreeSql` 且 `Ado.DataType` 正确（`GplRegressionTests.cs`） |
-| 多方言集成 | 靶机连接串走环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`；未设置或 `Ado.ExecuteConnectTest()` 不可达即 `Assert.Skip`（无靶机时全绿）。**凭据不进仓库**（`MultiDialectIntegrationTests.cs`） |
+| 多方言集成 | 靶机连接串走环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`；未设置或 `Ado.ExecuteConnectTest()` 不可达即 `Assert.Skip`（无靶机时全绿）。**凭据不进仓库**（`MultiDialectIntegrationTests.cs`）。M5-1 起另跑一组**目录查询靶机测**：清单 SQL 必须跑得通（允许空集、不允许报错），并建一个探测视图验证视图定义、结束即删；容器名由 `SELECT DATABASE()` / `SELECT current_schema()` 现取（不喂 `GetDatabasesAsync()` 的首项，原因见 §4 的 PG 不一致） |
+| 目录查询（纯逻辑） | `CatalogQueryTests`：方言路由、能力矩阵（含 `Schema`）、SQL 形状（目标系统表/收窄条件）、限定名与**转义**（SQLite `''`、MySQL `\\`+`` `` ``、PG 双引号）、单库绑定标志——**不依赖任何数据库即可全绿** |
 | 密钥库集成 | **Linux**：真访问本机 freedesktop Secret Service（`SecretServiceKeyProviderTests.cs`），**用唯一 `application` 属性隔离并结束即删**，不污染用户真实凭据；无会话总线/服务即 `Assert.Skip`。**macOS**：真访问 login keychain（`MacKeychainKeyProviderTests.cs`），唯一 `service` 隔离 + `suppressUi`（禁授权框）+ 结束即删；非 macOS `Assert.Skip`。信封加密本身一律用**假主密钥**（`FakeMasterKeyProvider`）纯单测，CI 无密钥库也全绿 |
-| ViewModels | 纯逻辑测（不启 Avalonia）；测试工程 ProjectReference 壳工程；交互留到 Avalonia.Headless（M3 再引入） |
+| ViewModels | 纯逻辑测（不启 Avalonia）；测试工程 ProjectReference 壳工程；交互留到 Avalonia.Headless（M3 再引入）。**替身分层**：`StubXxx`（对话框/选择器）与 `ScriptedMetadataExplorer`（可编排「库→模式→对象」形状，让树的多层逻辑无需靶机即可测透，M5-2） |
 | 交付门槛 | `dotnet build DdraigBench.slnx` 零警告零错误 + `dotnet test` 全绿，输出贴进交付说明 |
 
-> ✅ **Headless UI 测试已部分接通（2026-09-18 实测）**：改用 **`Avalonia.Headless 12.1.2`（基础包，无 xunit 耦合）+ xUnit v3 `AssemblyFixture`**（`DdraigBench.Test/TestAppFixture.cs`：`AppBuilder.Configure<App>().UseHeadless(new AvaloniaHeadlessPlatformOptions()).SetupWithoutStarting()`）。
+> ✅ **Headless UI 测试已部分接通（2026-09-18 实测）**：改用 **`Avalonia.Headless 12.1.3`（基础包，无 xunit 耦合）+ xUnit v3 `AssemblyFixture`**（`DdraigBench.Test/TestAppFixture.cs`：`AppBuilder.Configure<App>().UseHeadless(new AvaloniaHeadlessPlatformOptions()).SetupWithoutStarting()`）。
 > - **能用**：不触碰 Dispatcher 的控件与附加属性——`ResultColumns` 动态列已纳入回归（`HeadlessUiTests`，覆盖 M1 那个"整块不渲染"的坑）。
 > - ⚠️ **不能用**：`Avalonia.Headless.XUnit 12.1.2` 钉 `xunit.v3.extensibility.core 3.2.2`，与本工程直接引用的 `xunit.v3 4.0.1` 不兼容（discovery 阶段即 `MissingMethodException: TestIntrospectionHelper.GetTestCaseDetails`）；而 `HeadlessUnitTestSession.StartNew(...).Dispatch(...)` 在本 MTP+fixture 组合下**实测两次挂死**（须限时杀掉）。故**构造 `TextEditor` 这类需要 UI 线程 Dispatcher 的控件仍无法在测试里做**（线程池线程构造会 `VerifyAccess` 抛 `InvalidOperationException`）——`EditorText` 的 UI 回归待后续（或改走 VSTest 通道时再试）。
 
@@ -377,8 +417,11 @@ public sealed class DbSession : IAsyncDisposable
 - [ ] **M2 多方言**：MySqlConnector / PostgreSQL **已接入并实测通过**（SqlServer 待靶机挂起）；连接对话框按 Provider 出参数表 ✅；GPL 防回归已升级为真测试 ✅（§7）。（"MasterPool 冒烟测试回写 §4" 已在 M1-1 完成。）
 - [x] **M3 编辑器与会话**：SQL 编辑器（AvaloniaEdit 12.0.0，§2.7 实查通过）；事务模式（LeaseRawAsync）；取消执行；结果网格**服务端分页 + 行虚拟化**（M3-1..M3-4 均已完成，2026-10-05）。
 - [x] **M4 生产力功能**：连接凭据加密存储（三平台 + UI 接线）、导出 CSV/INSERT、DDL 预览、ISqlDialect 落地。**已全部完成**（2026-10-05，含 M4-4 的壳工程接线）。
-
-M0（依赖整改）已完成：`FreeSql.All` 已替换为裸 `FreeSql`，GPL 风险源已移除。UI 依赖骨架亦已就位（FluentAvaloniaUI 3.1.0 主题 + FluentIcons.Avalonia.Fluent 2.1.341 + Avalonia.Controls.DataGrid 12.1.2，§2.6）。
+- [ ] **M5 元数据完整性**（2026-10-08 起）：把 IDbFirst 的缺口补齐到"用户可见、可测"。
+  - [x] **M5-1 目录查询层 ✅（2026-10-08）**：`Dialects/CatalogQueries/`（`ICatalogQueries` + SQLite/MySQL/PG 三实现 + `CatalogQuerySets` 工厂，只造 SQL）+ `Metadata/CatalogQueryExecutor`（执行 + 按列名映射）+ `DbObjectInfo.Definition`；`FreeSqlMetadataExplorer` 改为"IDbFirst + 目录查询"双通道，`GetObjectsAsync` 支持 Trigger/StoredProcedure/Function（方言没有即空集，不报错），`GetDdlAsync` 改为**原始定义优先**（表：SQLite 保留 AUTOINCREMENT/UNIQUE/CHECK/COLLATE；视图：三方真实定义；触发器/例程：按名取定义）。壳层：库节点平铺触发器/例程、`CanPreviewDdl` 放开这三类、展开失败收敛成状态栏（fire-and-forget 异常不再被吞）。顺带修 **MySQL 字面量反斜杠未转义**（导出 INSERT 会静默改写含 `\` 的数据）。测试 **218 个（204 通过 / 14 跳过 / 0 失败）**，构建 0 警告 0 错误。
+  - [x] **M5-2 模式层与 PG 库清单 ✅（2026-10-08）**：`DbObjectKind.Schema` + `ICatalogQueries` 增 `ConnectionIsBoundToSingleDatabase` / `BuildCurrentDatabaseQuery`；`FreeSqlMetadataExplorer.GetDatabasesAsync` 对 PG 收窄为 `SELECT current_database()`（原先会把「看得见打不开」的库列进树）、`GetObjectsAsync` 支持 `Schema`（SQLite/MySQL 空集）；PG 模式清单滤掉 `pg_catalog`/`information_schema`/`pg_toast`/`pg_temp%`。壳层树变为「库 → 模式 → 对象」（有模式才加层，无模式保持 M5-1 原样），`ConnectionTreeNodeViewModel.Database` **改名 `Container`**（PG 下对象容器是模式名）。**修的既有缺陷**：PG 下库名被当作模式名查表，树通常展不开。测试 **227 个（213 通过 / 14 跳过 / 0 失败）**，构建 0 警告 0 错误。
+  - [ ] **M5-3（待做）**：事件与分区、MySQL/PG 的触发器与例程定义、MySQL 表定义（`SHOW CREATE TABLE`）、PG 物化视图。**注意**：这些几乎全是"无靶机就无法实测"的方言代码——按 §8 的既定原则（SqlServer 挂起）应先把靶机（`DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`）接上再做，别堆未验证的 SQL。
+M0（依赖整改）已完成：`FreeSql.All` 已替换为裸 `FreeSql`，GPL 风险源已移除。UI 依赖骨架亦已就位（FluentAvaloniaUI 3.1.0 主题 + FluentIcons.Avalonia.Fluent 2.1.343 + Avalonia.Controls.DataGrid 12.1.2，§2.6）。
 
 M1 进度：**M1-1 地基** + **M1-2 Querying** + **M1-3 Connections** + **M1-4 Metadata/Sessions** + **M1-6 UI 闭环** + **M1-7 GPL 防回归（静态断言）** 完成（2026-09-18）——Core 工程 + Provider.Sqlite（主/测/Core）+ SQLite 冒烟测试 + MasterPool 取还语义实测（§4）+ `QueryResult`/`QueryRunner` + `ConnectionProfile`/`FreeSqlFactory` + `IMetadataExplorer`/`FreeSqlMetadataExplorer`（Table/View/Column）+ `DbSession`/`ConnectionLease` + `MainViewModel`/`ConnectionTreeNodeViewModel`/`QueryTabViewModel` + `ResultColumns`（DataGrid 动态列附加属性）+ `IFilePicker` + `GplRegressionTests`。测试 25 个全绿（xunit.v3 4.0.1，含 VM 纯逻辑测）。M1 仅剩 **手动截图验收**（本环境无显示器，需人工 `dotnet run -c Release --project DdraigBench` 确认：打开 SQLite → 左树展开 → `SELECT 1` 出网格；用 Release 可绕开 IDE 预览器对 `bin\Debug` 的文件锁，见 §9）。
 

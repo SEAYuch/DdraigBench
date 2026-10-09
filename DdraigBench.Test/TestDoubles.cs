@@ -2,7 +2,9 @@
 
 using System.Security.Cryptography;
 using DdraigBench.Core.Connections;
+using DdraigBench.Core.Metadata;
 using DdraigBench.Core.Secrets;
+using DdraigBench.Core.Sessions;
 using DdraigBench.Services;
 
 namespace DdraigBench.Test;
@@ -36,8 +38,7 @@ internal sealed class StubFilePicker(string? openPath = null, string? savePath =
     }
 }
 
-internal sealed class StubDdlViewer : IDdlViewer
-{
+internal sealed class StubDdlViewer : IDdlViewer{
     public string? LastTitle { get; private set; }
 
     public string? LastDdl { get; private set; }
@@ -51,6 +52,73 @@ internal sealed class StubDdlViewer : IDdlViewer
         ShowCount++;
         return Task.CompletedTask;
     }
+}
+
+/// <summary>
+/// 可编排的元数据替身：直接把「库 → 模式 → 对象」的形状喂给 VM，
+/// 这样没有 PostgreSQL 靶机也能把树的层级逻辑测透（M5-2）。
+/// </summary>
+internal sealed class ScriptedMetadataExplorer : IMetadataExplorer
+{
+    public IReadOnlyList<string> Databases { get; init; } = ["app"];
+
+    public IReadOnlyList<string> Schemas { get; init; } = [];
+
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> Tables { get; init; } =
+        new Dictionary<string, IReadOnlyList<string>>();
+
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> Views { get; init; } =
+        new Dictionary<string, IReadOnlyList<string>>();
+
+    public List<(string Container, string Name)> DdlRequests { get; } = [];
+
+    public Task<IReadOnlyList<string>> GetDatabasesAsync(DbSession session, CancellationToken ct = default) =>
+        Task.FromResult(Databases);
+
+    public Task<IReadOnlyList<DbObjectInfo>> GetObjectsAsync(
+        DbSession session, string database, DbObjectKind kind, CancellationToken ct = default)
+    {
+        IReadOnlyList<string> names = kind switch
+        {
+            DbObjectKind.Schema => Schemas,
+            DbObjectKind.Table => Tables.TryGetValue(database, out var tables) ? tables : [],
+            DbObjectKind.View => Views.TryGetValue(database, out var views) ? views : [],
+            _ => [],
+        };
+
+        return Task.FromResult<IReadOnlyList<DbObjectInfo>>(
+            names.Select(name => new DbObjectInfo(name)).ToList());
+    }
+
+    public Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<DbColumnInfo>>([]);
+
+    public Task<string?> GetDdlAsync(
+        DbSession session, string database, string table, CancellationToken ct = default)
+    {
+        DdlRequests.Add((database, table));
+        return Task.FromResult<string?>($"-- ddl {database}.{table}");
+    }
+}
+
+/// <summary>元数据探查器替身：对象查询一律抛异常，用于验证「展开失败只写状态、不崩树」。</summary>
+internal sealed class ThrowingMetadataExplorer : IMetadataExplorer
+{
+    public Task<IReadOnlyList<string>> GetDatabasesAsync(DbSession session, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<string>>(["main"]);
+
+    public Task<IReadOnlyList<DbObjectInfo>> GetObjectsAsync(
+        DbSession session, string database, DbObjectKind kind, CancellationToken ct = default) =>
+        Task.FromException<IReadOnlyList<DbObjectInfo>>(new InvalidOperationException("元数据不可用"));
+
+    public Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<DbColumnInfo>>([]);
+
+    public Task<string?> GetDdlAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        Task.FromResult<string?>(null);
 }
 
 internal sealed class StubExportDialog(ExportTarget? target = null) : IExportDialog

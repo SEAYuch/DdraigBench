@@ -144,8 +144,11 @@ public sealed class MainViewModelTests
         await vm.PreviewDdlAsync();
 
         Assert.Equal(1, viewer.ShowCount);
-        Assert.Contains("CREATE TABLE \"t1\"", viewer.LastDdl);
-        Assert.Contains("\"name\" TEXT", viewer.LastDdl);
+        // M5-1 起 SQLite 的表 DDL 走 sqlite_master.sql 原文（保真优先，见 AGENTS.md §6.2），
+        // 因此这里断言的是原始脚本而非 DdlGenerator 的加引号重建版本（后者由 DdlGeneratorTests 覆盖）。
+        Assert.Contains("CREATE TABLE t1", viewer.LastDdl);
+        Assert.Contains("name TEXT", viewer.LastDdl);
+        Assert.EndsWith(";", viewer.LastDdl);
         Assert.Contains("DDL 预览", vm.Status);
     }
 
@@ -275,6 +278,142 @@ public sealed class MainViewModelTests
 
         await vm.ForgetSavedConnectionAsync();
         Assert.Contains("请先", vm.Status);
+    }
+
+    [Fact]
+    public async Task Database_node_lists_triggers_and_their_ddl_can_be_previewed()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery(
+            """
+            CREATE TABLE t1 (id INTEGER PRIMARY KEY);
+            CREATE TRIGGER trg_t1 AFTER INSERT ON t1 BEGIN UPDATE t1 SET id = id; END;
+            """);
+
+        var viewer = new StubDdlViewer();
+        var vm = new MainViewModel(
+            new StubConnectionDialog(SqliteProfile(db)), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), viewer,
+            new StubConnectionStoreFactory(new StubConnectionStore()));
+        await vm.OpenConnectionAsync();
+
+        var database = vm.Databases.Single();
+        database.IsExpanded = true;
+        await WaitUntilAsync(() => database.Children.Any(c => c.Name == "trg_t1"));
+
+        // §6.2 缺口：IDbFirst 完全看不到触发器，M5-1 起由目录查询补齐
+        var trigger = database.Children.Single(c => c.Name == "trg_t1");
+        Assert.Equal(DbObjectKind.Trigger, trigger.Kind);
+
+        vm.SelectedNode = trigger;
+        Assert.True(vm.CanPreviewDdl);
+
+        await vm.PreviewDdlAsync();
+
+        Assert.Equal(1, viewer.ShowCount);
+        Assert.Contains("CREATE TRIGGER trg_t1", viewer.LastDdl);
+    }
+
+    [Fact]
+    public async Task Expand_failure_is_reported_instead_of_crashing_the_tree()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery("CREATE TABLE t1 (id INTEGER PRIMARY KEY)");
+
+        var vm = new MainViewModel(
+            new StubConnectionDialog(SqliteProfile(db)), new FreeSqlFactory(), new ThrowingMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()));
+        await vm.OpenConnectionAsync();
+
+        vm.Databases.Single().IsExpanded = true;
+
+        // 展开是 fire-and-forget，异常必须收敛到状态栏（否则成为未观察的任务异常）
+        await WaitUntilAsync(() => vm.Status.Contains("失败"));
+        Assert.Contains("展开 main 失败", vm.Status);
+    }
+
+    [Fact]
+    public async Task Schema_level_is_inserted_when_the_dialect_reports_schemas()
+    {
+        using var db = new TempSqliteDatabase();
+        var explorer = new ScriptedMetadataExplorer
+        {
+            Databases = ["app"],
+            Schemas = ["public", "sales"],
+            Tables = new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["public"] = ["t1"],
+                ["sales"] = ["t2"],
+            },
+        };
+
+        var viewer = new StubDdlViewer();
+        var vm = new MainViewModel(
+            new StubConnectionDialog(SqliteProfile(db)), new FreeSqlFactory(), explorer,
+            new StubFilePicker(), new StubExportDialog(), viewer,
+            new StubConnectionStoreFactory(new StubConnectionStore()));
+
+        // 无模式层的方言（SQLite）不该出现模式节点；此处靠替身模拟 PostgreSQL 的形状
+        await vm.OpenConnectionAsync();
+        var database = vm.Databases.Single();
+
+        database.IsExpanded = true;
+        await WaitUntilAsync(() => database.Children.Count > 0);
+
+        Assert.Equal(
+            new[] { "public", "sales" },
+            database.Children.Select(c => c.Name));
+        Assert.All(database.Children, c => Assert.Equal(DbObjectKind.Schema, c.Kind));
+
+        var publicSchema = database.Children.Single(c => c.Name == "public");
+        publicSchema.IsExpanded = true;
+        await WaitUntilAsync(() => publicSchema.Children.Count > 0);
+
+        var table = publicSchema.Children.Single();
+        Assert.Equal("t1", table.Name);
+        Assert.Equal(DbObjectKind.Table, table.Kind);
+        // 关键：对象的容器是**模式**而不是库——传错会让 DDL 预览取不到对象
+        Assert.Equal("public", table.Container);
+
+        vm.SelectedNode = table;
+        Assert.True(vm.CanPreviewDdl);
+
+        await vm.PreviewDdlAsync();
+
+        Assert.Equal([("public", "t1")], explorer.DdlRequests);
+        Assert.Equal("-- ddl public.t1", viewer.LastDdl);
+    }
+
+    [Fact]
+    public async Task Database_node_without_schemas_stays_flat()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery("CREATE TABLE t1 (id INTEGER PRIMARY KEY)");
+        var explorer = new ScriptedMetadataExplorer
+        {
+            Databases = ["main"],
+            Schemas = [],
+            Tables = new Dictionary<string, IReadOnlyList<string>> { ["main"] = ["t1"] },
+        };
+
+        var vm = new MainViewModel(
+            new StubConnectionDialog(SqliteProfile(db)), new FreeSqlFactory(), explorer,
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()));
+        await vm.OpenConnectionAsync();
+
+        var database = vm.Databases.Single();
+        database.IsExpanded = true;
+        await WaitUntilAsync(() => database.Children.Count > 0);
+
+        // 无模式 → 对象直接挂在库节点下（与 M5-1 的树形一致），且容器是库名
+        var table = database.Children.Single();
+        Assert.Equal("t1", table.Name);
+        Assert.Equal("main", table.Container);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

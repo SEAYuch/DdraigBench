@@ -17,11 +17,11 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
         string name,
         DbObjectKind kind,
         Func<ConnectionTreeNodeViewModel, Task>? loadChildren = null,
-        string? database = null)
+        string? container = null)
     {
         Name = name;
         Kind = kind;
-        Database = database;
+        Container = container;
         _loadChildren = loadChildren;
     }
 
@@ -29,8 +29,11 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
 
     public DbObjectKind Kind { get; }
 
-    /// <summary>所属数据库（DDL 预览需要库名 + 表名两级）。</summary>
-    public string? Database { get; }
+    /// <summary>
+    /// 所属**容器**：库级对象是库名，PostgreSQL 的模式级对象是模式名（M5-2）。
+    /// 之所以不叫 Database，是因为 PG 下对象查询的入参是模式，两者混用会把 DDL 预览的库名传错。
+    /// </summary>
+    public string? Container { get; }
 
     public ObservableCollection<ConnectionTreeNodeViewModel> Children { get; } = new();
 

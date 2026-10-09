@@ -125,7 +125,15 @@ public sealed class MainViewModel : ViewModelBase
 
     public bool CanPreviewDdl =>
         _session is not null
-        && _selectedNode is { Database: not null, Kind: DbObjectKind.Table or DbObjectKind.View };
+        && _selectedNode is
+        {
+            Container: not null,
+            Kind: DbObjectKind.Table
+                or DbObjectKind.View
+                or DbObjectKind.Trigger
+                or DbObjectKind.StoredProcedure
+                or DbObjectKind.Function,
+        };
 
     public QueryTabViewModel? SelectedTab
     {
@@ -299,7 +307,7 @@ public sealed class MainViewModel : ViewModelBase
 
     public async Task PreviewDdlAsync()
     {
-        if (_session is null || _selectedNode is not { Database: not null } node)
+        if (_session is null || _selectedNode is not { Container: not null } node)
         {
             Status = "请先连接并选中左侧的表或视图";
             return;
@@ -307,14 +315,14 @@ public sealed class MainViewModel : ViewModelBase
 
         try
         {
-            var ddl = await _metadata.GetDdlAsync(_session, node.Database!, node.Name);
+            var ddl = await _metadata.GetDdlAsync(_session, node.Container!, node.Name);
             if (ddl is null)
             {
-                Status = $"未找到对象：{node.Database}.{node.Name}";
+                Status = $"未找到对象：{node.Container}.{node.Name}";
                 return;
             }
 
-            Status = $"DDL 预览：{node.Database}.{node.Name}";
+            Status = $"DDL 预览：{node.Container}.{node.Name}";
             await _ddlViewer.ShowAsync($"{node.Name} — DDL", ddl);
         }
         catch (Exception ex)
@@ -323,27 +331,109 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
+    /// <summary>
+    /// 展开一个库节点：先探模式层，有模式就先铺一层模式节点，没有就直接铺对象。
+    /// SQLite（无模式）与 MySQL（库即模式）落进"直接铺对象"的分支，树形与 M5-1 完全一致；
+    /// PostgreSQL 则得到「库 → 模式 → 对象」。
+    /// </summary>
     private ConnectionTreeNodeViewModel CreateDatabaseNode(string database) =>
         new(database, DbObjectKind.Database, async node =>
         {
-            foreach (var table in await _metadata.GetObjectsAsync(_session!, database, DbObjectKind.Table))
+            if (_session is null)
             {
-                node.Children.Add(CreateTableNode(database, table.Name));
+                return;
             }
 
-            foreach (var view in await _metadata.GetObjectsAsync(_session!, database, DbObjectKind.View))
+            try
             {
-                node.Children.Add(CreateTableNode(database, view.Name));
+                var schemas = await _metadata.GetObjectsAsync(_session, database, DbObjectKind.Schema);
+
+                if (schemas.Count > 0)
+                {
+                    foreach (var schema in schemas)
+                    {
+                        node.Children.Add(CreateSchemaNode(schema.Name));
+                    }
+
+                    return;
+                }
+
+                await LoadObjectsAsync(node, database);
+            }
+            catch (Exception ex)
+            {
+                // 展开是 fire-and-forget（见 ConnectionTreeNodeViewModel），异常必须就地收敛成状态，
+                // 否则会成为未观察的任务异常、静默吞掉。
+                Status = $"展开 {database} 失败：{ex.Message}";
             }
         }, database);
 
-    private ConnectionTreeNodeViewModel CreateTableNode(string database, string table) =>
-        new(table, DbObjectKind.Table, async node =>
+    /// <summary>模式节点（PostgreSQL）：其子对象与 DDL 预览都以模式名为容器。</summary>
+    private ConnectionTreeNodeViewModel CreateSchemaNode(string schema) =>
+        new(schema, DbObjectKind.Schema, async node =>
         {
-            foreach (var column in await _metadata.GetColumnsAsync(_session!, database, table))
+            if (_session is null)
             {
-                node.Children.Add(new ConnectionTreeNodeViewModel(
-                    $"{column.Name} : {column.DataType}", DbObjectKind.Column));
+                return;
             }
-        }, database);
+
+            try
+            {
+                await LoadObjectsAsync(node, schema);
+            }
+            catch (Exception ex)
+            {
+                Status = $"展开模式 {schema} 失败：{ex.Message}";
+            }
+        }, schema);
+
+    /// <summary>
+    /// 铺开一个容器（库或模式）下的对象：表 / 视图走 IDbFirst，触发器 / 存储过程 / 函数走目录查询补齐
+    /// （M5-1，AGENTS.md §6.2）。方言没有这类对象时返回空集，不会报错。
+    /// </summary>
+    private async Task LoadObjectsAsync(ConnectionTreeNodeViewModel node, string container)
+    {
+        foreach (var table in await _metadata.GetObjectsAsync(_session!, container, DbObjectKind.Table))
+        {
+            node.Children.Add(CreateObjectNode(container, table.Name, DbObjectKind.Table));
+        }
+
+        foreach (var view in await _metadata.GetObjectsAsync(_session!, container, DbObjectKind.View))
+        {
+            node.Children.Add(CreateObjectNode(container, view.Name, DbObjectKind.View));
+        }
+
+        foreach (var kind in new[]
+                 {
+                     DbObjectKind.Trigger, DbObjectKind.StoredProcedure, DbObjectKind.Function,
+                 })
+        {
+            foreach (var item in await _metadata.GetObjectsAsync(_session!, container, kind))
+            {
+                node.Children.Add(new ConnectionTreeNodeViewModel(item.Name, kind, container: container));
+            }
+        }
+    }
+
+    private ConnectionTreeNodeViewModel CreateObjectNode(string container, string name, DbObjectKind kind) =>
+        new(name, kind, async node =>
+        {
+            if (_session is null)
+            {
+                return;
+            }
+
+            try
+            {
+                foreach (var column in await _metadata.GetColumnsAsync(_session, container, name))
+                {
+                    node.Children.Add(new ConnectionTreeNodeViewModel(
+                        $"{column.Name} : {column.DataType}", DbObjectKind.Column));
+                }
+            }
+            catch (Exception ex)
+            {
+                Status = $"读取 {name} 的列失败：{ex.Message}";
+            }
+        }, container);
 }

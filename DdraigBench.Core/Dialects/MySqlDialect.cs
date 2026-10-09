@@ -8,6 +8,14 @@ public sealed class MySqlDialect : SqlDialectBase
 
     public override string QuoteIdentifier(string name) => $"`{name.Replace("`", "``")}`";
 
+    /// <summary>
+    /// MySQL 默认 sql_mode 下反斜杠是转义符（<c>NO_BACKSLASH_ESCAPES</c> 未开启），
+    /// 故必须先把 <c>\</c> 翻倍再翻倍单引号——否则含反斜杠的数据（Windows 路径、JSON 里的 <c>\n</c>）
+    /// 会在导出 INSERT 与目录查询的库名过滤里被改写。
+    /// </summary>
+    protected override string Quote(string text) =>
+        $"'{(text ?? string.Empty).Replace("\\", "\\\\").Replace("'", "''")}'";
+
     // MySQL 列定义顺序：NOT NULL → AUTO_INCREMENT → KEY
     public override string IdentityClause => "AUTO_INCREMENT";
 
