@@ -3,10 +3,12 @@
 using System.Collections.ObjectModel;
 using System.Windows.Input;
 using DdraigBench.Core.Connections;
+using DdraigBench.Core.Dialects;
 using DdraigBench.Core.Metadata;
 using DdraigBench.Core.Sessions;
-using DdraigBench.Services;
 using ReactiveUI;
+using System.Runtime.CompilerServices;
+using DdraigBench.Services;
 
 namespace DdraigBench.ViewModels;
 
@@ -19,6 +21,8 @@ public sealed class MainViewModel : ViewModelBase
     private readonly IExportDialog _exportDialog;
     private readonly IDdlViewer _ddlViewer;
     private readonly IConnectionStoreFactory _storeFactory;
+    private readonly IThemePreferenceStore? _themePreferenceStore;
+    private readonly Func<ThemeMode, Task>? _applyTheme;
     private IConnectionStore? _store;
     private DbSession? _session;
     private QueryTabViewModel? _selectedTab;
@@ -28,6 +32,10 @@ public sealed class MainViewModel : ViewModelBase
     private string _protectorName = "未初始化";
     private bool _secretsEncrypted;
     private string? _securityWarning;
+    private string _treeFilter = string.Empty;
+    private bool _isNavigatorVisible = true;
+    private int _sessionIdentity;
+    private ThemeMode _selectedThemeMode = ThemeMode.System;
 
     public MainViewModel(
         IConnectionDialog connectionDialog,
@@ -36,7 +44,9 @@ public sealed class MainViewModel : ViewModelBase
         IFilePicker filePicker,
         IExportDialog exportDialog,
         IDdlViewer ddlViewer,
-        IConnectionStoreFactory storeFactory)
+        IConnectionStoreFactory storeFactory,
+        IThemePreferenceStore? themePreferenceStore = null,
+        Func<ThemeMode, Task>? applyTheme = null)
     {
         _connectionDialog = connectionDialog;
         _factory = factory;
@@ -45,15 +55,46 @@ public sealed class MainViewModel : ViewModelBase
         _exportDialog = exportDialog;
         _ddlViewer = ddlViewer;
         _storeFactory = storeFactory;
+        _themePreferenceStore = themePreferenceStore;
+        _applyTheme = applyTheme;
 
         OpenConnectionCommand = ReactiveCommand.CreateFromTask(OpenConnectionAsync);
         OpenSavedConnectionCommand = ReactiveCommand.CreateFromTask(OpenSavedConnectionAsync);
         ForgetSavedConnectionCommand = ReactiveCommand.CreateFromTask(ForgetSavedConnectionAsync);
         NewQueryCommand = ReactiveCommand.Create(NewQuery);
-        PreviewDdlCommand = ReactiveCommand.CreateFromTask(PreviewDdlAsync);
+        ExecuteSelectedQueryCommand = ReactiveCommand.CreateFromTask(ExecuteSelectedQueryAsync);
+        PreviewDdlCommand = ReactiveCommand.CreateFromTask<ConnectionTreeNodeViewModel>(PreviewDdlAsync);
+        PreviewSelectedDdlCommand = ReactiveCommand.CreateFromTask(() => PreviewDdlAsync(SelectedNode));
+        OpenDataCommand = ReactiveCommand.CreateFromTask<ConnectionTreeNodeViewModel>(OpenDataAsync);
+        OpenSelectedDataCommand = ReactiveCommand.CreateFromTask(() => OpenDataAsync(SelectedNode));
+        RefreshSelectedDataCommand = ReactiveCommand.CreateFromTask(RefreshSelectedDataAsync);
+        ToggleNavigatorCommand = ReactiveCommand.Create(() => IsNavigatorVisible = !IsNavigatorVisible);
+        SetThemeCommand = ReactiveCommand.CreateFromTask<ThemeMode>(SetThemeAsync);
+        Databases.CollectionChanged += (_, e) =>
+        {
+            if (e.OldItems is not null)
+            {
+                foreach (ConnectionTreeNodeViewModel oldNode in e.OldItems)
+                {
+                    oldNode.PropertyChanged -= OnDatabaseNodeChanged;
+                }
+            }
+
+            if (e.NewItems is not null)
+            {
+                foreach (ConnectionTreeNodeViewModel newNode in e.NewItems)
+                {
+                    newNode.PropertyChanged += OnDatabaseNodeChanged;
+                }
+            }
+
+            RefreshVisibleDatabases();
+        };
     }
 
     public ObservableCollection<ConnectionTreeNodeViewModel> Databases { get; } = new();
+
+    public ObservableCollection<ConnectionTreeNodeViewModel> VisibleDatabases { get; } = new();
 
     public ObservableCollection<QueryTabViewModel> Tabs { get; } = new();
 
@@ -68,7 +109,86 @@ public sealed class MainViewModel : ViewModelBase
 
     public ICommand NewQueryCommand { get; }
 
+    public ICommand ExecuteSelectedQueryCommand { get; }
+
     public ICommand PreviewDdlCommand { get; }
+
+    public ICommand PreviewSelectedDdlCommand { get; }
+
+    public ICommand OpenDataCommand { get; }
+
+    public ICommand OpenSelectedDataCommand { get; }
+
+    public ICommand RefreshSelectedDataCommand { get; }
+
+    public ICommand ToggleNavigatorCommand { get; }
+
+    public ICommand SetThemeCommand { get; }
+
+    public IReadOnlyList<ThemeMode> ThemeModes { get; } = Enum.GetValues<ThemeMode>();
+
+    public IReadOnlyList<string> ThemeOptions { get; } = ["跟随系统", "浅色", "深色"];
+
+    public string SelectedThemeName
+    {
+        get => SelectedThemeMode switch
+        {
+            ThemeMode.Light => "浅色",
+            ThemeMode.Dark => "深色",
+            _ => "跟随系统",
+        };
+        set
+        {
+            var mode = value switch
+            {
+                "浅色" => ThemeMode.Light,
+                "深色" => ThemeMode.Dark,
+                _ => ThemeMode.System,
+            };
+            _ = SetThemeAsync(mode);
+        }
+    }
+
+    public ThemeMode SelectedThemeMode
+    {
+        get => _selectedThemeMode;
+        set
+        {
+            if (_selectedThemeMode == value)
+            {
+                return;
+            }
+
+            _selectedThemeMode = value;
+            this.RaisePropertyChanged();
+            _ = SetThemeAsync(value);
+        }
+    }
+
+    public string ActiveConnectionName => _session?.Profile.Name ?? "未连接";
+
+    public bool IsConnected => _session is not null;
+
+    public bool IsNavigatorVisible
+    {
+        get => _isNavigatorVisible;
+        set => this.RaiseAndSetIfChanged(ref _isNavigatorVisible, value);
+    }
+
+    public string TreeFilter
+    {
+        get => _treeFilter;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref _treeFilter, value);
+            foreach (var database in Databases)
+            {
+                database.ApplyFilter(value);
+            }
+
+            RefreshVisibleDatabases();
+        }
+    }
 
     /// <summary>左树选中节点（DDL 预览的来源）。</summary>
     public ConnectionTreeNodeViewModel? SelectedNode
@@ -78,6 +198,7 @@ public sealed class MainViewModel : ViewModelBase
         {
             this.RaiseAndSetIfChanged(ref _selectedNode, value);
             this.RaisePropertyChanged(nameof(CanPreviewDdl));
+            this.RaisePropertyChanged(nameof(CanOpenSelectedData));
         }
     }
 
@@ -135,6 +256,8 @@ public sealed class MainViewModel : ViewModelBase
                 or DbObjectKind.Function,
         };
 
+    public bool CanOpenSelectedData => _session is not null && _selectedNode?.CanOpenData == true;
+
     public QueryTabViewModel? SelectedTab
     {
         get => _selectedTab;
@@ -154,6 +277,17 @@ public sealed class MainViewModel : ViewModelBase
     /// </summary>
     public async Task InitializeAsync()
     {
+        if (_themePreferenceStore is not null)
+        {
+            _selectedThemeMode = await _themePreferenceStore.LoadAsync();
+            this.RaisePropertyChanged(nameof(SelectedThemeMode));
+            this.RaisePropertyChanged(nameof(SelectedThemeName));
+            if (_applyTheme is not null)
+            {
+                await _applyTheme(SelectedThemeMode);
+            }
+        }
+
         try
         {
             _store = await _storeFactory.CreateAsync();
@@ -178,6 +312,29 @@ public sealed class MainViewModel : ViewModelBase
         {
             SecurityWarning = $"读取已保存连接失败：{ex.Message}（本次会话不会持久化连接）";
             Status = ex.Message;
+        }
+    }
+
+    public async Task SetThemeAsync(ThemeMode mode)
+    {
+        _selectedThemeMode = mode;
+        this.RaisePropertyChanged(nameof(SelectedThemeMode));
+        this.RaisePropertyChanged(nameof(SelectedThemeName));
+        try
+        {
+            if (_applyTheme is not null)
+            {
+                await _applyTheme(mode);
+            }
+
+            if (_themePreferenceStore is not null)
+            {
+                await _themePreferenceStore.SaveAsync(mode);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Status = $"主题已切换，但无法保存偏好：{ex.Message}";
         }
     }
 
@@ -237,6 +394,7 @@ public sealed class MainViewModel : ViewModelBase
 
         Tabs.Clear();
         SelectedTab = null;
+        SelectedNode = null;
 
         if (_session is not null)
         {
@@ -244,6 +402,7 @@ public sealed class MainViewModel : ViewModelBase
         }
 
         _session = new DbSession(profile, _factory);
+        _sessionIdentity = RuntimeHelpers.GetHashCode(_session);
 
         Databases.Clear();
         try
@@ -251,10 +410,14 @@ public sealed class MainViewModel : ViewModelBase
             var databases = await _metadata.GetDatabasesAsync(_session);
             foreach (var database in databases)
             {
-                Databases.Add(CreateDatabaseNode(database));
+                var node = CreateDatabaseNode(database, _session);
+                node.ApplyFilter(TreeFilter);
+                Databases.Add(node);
             }
 
             Status = $"已连接 {profile.Name}：{databases.Count} 个数据库";
+            this.RaisePropertyChanged(nameof(ActiveConnectionName));
+            this.RaisePropertyChanged(nameof(IsConnected));
             this.RaisePropertyChanged(nameof(CanPreviewDdl));
             NewQuery();
             return true;
@@ -277,6 +440,26 @@ public sealed class MainViewModel : ViewModelBase
         else
         {
             SavedConnections[SavedConnections.IndexOf(existing)] = profile;
+        }
+    }
+
+    private void RefreshVisibleDatabases()
+    {
+        VisibleDatabases.Clear();
+        foreach (var database in Databases)
+        {
+            if (database.IsVisible)
+            {
+                VisibleDatabases.Add(database);
+            }
+        }
+    }
+
+    private void OnDatabaseNodeChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(ConnectionTreeNodeViewModel.IsVisible) or nameof(ConnectionTreeNodeViewModel.VisibleChildren))
+        {
+            RefreshVisibleDatabases();
         }
     }
 
@@ -305,9 +488,82 @@ public sealed class MainViewModel : ViewModelBase
         SelectedTab = tab;
     }
 
-    public async Task PreviewDdlAsync()
+    public async Task OpenDataAsync(ConnectionTreeNodeViewModel? node)
     {
-        if (_session is null || _selectedNode is not { Container: not null } node)
+        if (_session is null || node is not { Container: not null, Kind: DbObjectKind.Table or DbObjectKind.View })
+        {
+            Status = "请选择一个表或视图以浏览数据";
+            return;
+        }
+
+        var key = string.Join('\u001f', _sessionIdentity, _session.Profile.DataType,
+            node.Container, node.Kind, node.Name);
+        var existing = Tabs.FirstOrDefault(tab => tab.IsDataBrowser && tab.BrowserObjectKey == key);
+        if (existing is not null)
+        {
+            SelectedTab = existing;
+            return;
+        }
+
+        if (!SqlDialects.TryGet(_session.Profile.DataType, out var dialect))
+        {
+            Status = $"该方言暂不支持数据浏览：{_session.Profile.DataType}";
+            return;
+        }
+
+        // PostgreSQL is already connected to the selected database; its tree container is the schema.
+        var sql = BuildDataSelect(_session.Profile.DataType, node.Container, node.Name);
+        if (node.Kind == DbObjectKind.Table)
+        {
+            var primaryKeyColumns = (await _metadata.GetColumnsAsync(_session, node.Container, node.Name))
+                .Where(column => column.IsPrimary)
+                .Select(column => dialect.QuoteIdentifier(column.Name))
+                .ToArray();
+            if (primaryKeyColumns.Length > 0)
+            {
+                sql += $" ORDER BY {string.Join(", ", primaryKeyColumns)}";
+            }
+        }
+        var tab = new QueryTabViewModel($"{node.Name}（数据）", () => _session, _filePicker, _exportDialog, key, node.Name)
+        {
+            Sql = sql,
+        };
+        Tabs.Add(tab);
+        SelectedTab = tab;
+        await tab.ExecuteAsync();
+    }
+
+    public static string BuildDataSelect(FreeSql.DataType dataType, string container, string objectName)
+    {
+        var dialect = SqlDialects.Get(dataType);
+        return $"SELECT * FROM {dialect.QuoteIdentifier(container)}.{dialect.QuoteIdentifier(objectName)}";
+    }
+
+    public async Task RefreshSelectedDataAsync()
+    {
+        if (SelectedTab is not { IsDataBrowser: true } tab)
+        {
+            return;
+        }
+
+        await tab.ExecuteAsync();
+    }
+
+    public async Task ExecuteSelectedQueryAsync()
+    {
+        if (SelectedTab is { IsQueryEditor: true } tab)
+        {
+            await tab.ExecuteAsync();
+        }
+    }
+
+    public Task PreviewDdlAsync() => PreviewDdlAsync(SelectedNode);
+
+    public async Task PreviewDdlAsync(ConnectionTreeNodeViewModel? selectedNode)
+    {
+        if (_session is null || selectedNode is not { Container: not null, Kind: not null } node
+            || node.Kind is not (DbObjectKind.Table or DbObjectKind.View or DbObjectKind.Trigger
+                or DbObjectKind.StoredProcedure or DbObjectKind.Function))
         {
             Status = "请先连接并选中左侧的表或视图";
             return;
@@ -336,29 +592,29 @@ public sealed class MainViewModel : ViewModelBase
     /// SQLite（无模式）与 MySQL（库即模式）落进"直接铺对象"的分支，树形与 M5-1 完全一致；
     /// PostgreSQL 则得到「库 → 模式 → 对象」。
     /// </summary>
-    private ConnectionTreeNodeViewModel CreateDatabaseNode(string database) =>
+    private ConnectionTreeNodeViewModel CreateDatabaseNode(string database, DbSession session) =>
         new(database, DbObjectKind.Database, async node =>
         {
-            if (_session is null)
+            if (!ReferenceEquals(_session, session))
             {
                 return;
             }
 
             try
             {
-                var schemas = await _metadata.GetObjectsAsync(_session, database, DbObjectKind.Schema);
+                var schemas = await _metadata.GetObjectsAsync(session, database, DbObjectKind.Schema);
 
                 if (schemas.Count > 0)
                 {
                     foreach (var schema in schemas)
                     {
-                        node.Children.Add(CreateSchemaNode(schema.Name));
+                        node.Children.Add(CreateSchemaNode(schema.Name, session));
                     }
 
                     return;
                 }
 
-                await LoadObjectsAsync(node, database);
+                await LoadObjectsAsync(node, database, session);
             }
             catch (Exception ex)
             {
@@ -369,17 +625,17 @@ public sealed class MainViewModel : ViewModelBase
         }, database);
 
     /// <summary>模式节点（PostgreSQL）：其子对象与 DDL 预览都以模式名为容器。</summary>
-    private ConnectionTreeNodeViewModel CreateSchemaNode(string schema) =>
+    private ConnectionTreeNodeViewModel CreateSchemaNode(string schema, DbSession session) =>
         new(schema, DbObjectKind.Schema, async node =>
         {
-            if (_session is null)
+            if (!ReferenceEquals(_session, session))
             {
                 return;
             }
 
             try
             {
-                await LoadObjectsAsync(node, schema);
+                await LoadObjectsAsync(node, schema, session);
             }
             catch (Exception ex)
             {
@@ -391,42 +647,58 @@ public sealed class MainViewModel : ViewModelBase
     /// 铺开一个容器（库或模式）下的对象：表 / 视图走 IDbFirst，触发器 / 存储过程 / 函数走目录查询补齐
     /// （M5-1，AGENTS.md §6.2）。方言没有这类对象时返回空集，不会报错。
     /// </summary>
-    private async Task LoadObjectsAsync(ConnectionTreeNodeViewModel node, string container)
+    private async Task LoadObjectsAsync(ConnectionTreeNodeViewModel node, string container, DbSession session)
     {
-        foreach (var table in await _metadata.GetObjectsAsync(_session!, container, DbObjectKind.Table))
-        {
-            node.Children.Add(CreateObjectNode(container, table.Name, DbObjectKind.Table));
-        }
-
-        foreach (var view in await _metadata.GetObjectsAsync(_session!, container, DbObjectKind.View))
-        {
-            node.Children.Add(CreateObjectNode(container, view.Name, DbObjectKind.View));
-        }
-
-        foreach (var kind in new[]
+        foreach (var (kind, label) in new[]
                  {
-                     DbObjectKind.Trigger, DbObjectKind.StoredProcedure, DbObjectKind.Function,
+                     (DbObjectKind.Table, "表"),
+                     (DbObjectKind.View, "视图"),
+                     (DbObjectKind.Trigger, "触发器"),
+                     (DbObjectKind.StoredProcedure, "存储过程"),
+                     (DbObjectKind.Function, "函数"),
                  })
         {
-            foreach (var item in await _metadata.GetObjectsAsync(_session!, container, kind))
+            var objects = await _metadata.GetObjectsAsync(session, container, kind);
+            if (!ReferenceEquals(_session, session))
             {
-                node.Children.Add(new ConnectionTreeNodeViewModel(item.Name, kind, container: container));
+                return;
             }
+
+            if (objects.Count == 0)
+            {
+                continue;
+            }
+
+            var group = new ConnectionTreeNodeViewModel(label, null, container: container, groupLabel: label);
+            foreach (var item in objects)
+            {
+                var child = kind is DbObjectKind.Table or DbObjectKind.View
+                    ? CreateObjectNode(container, item.Name, kind, session)
+                    : new ConnectionTreeNodeViewModel(item.Name, kind, container: container);
+                group.Children.Add(child);
+            }
+
+            node.Children.Add(group);
         }
     }
 
-    private ConnectionTreeNodeViewModel CreateObjectNode(string container, string name, DbObjectKind kind) =>
+    private ConnectionTreeNodeViewModel CreateObjectNode(string container, string name, DbObjectKind kind, DbSession session) =>
         new(name, kind, async node =>
         {
-            if (_session is null)
+            if (!ReferenceEquals(_session, session))
             {
                 return;
             }
 
             try
             {
-                foreach (var column in await _metadata.GetColumnsAsync(_session, container, name))
+                foreach (var column in await _metadata.GetColumnsAsync(session, container, name))
                 {
+                    if (!ReferenceEquals(_session, session))
+                    {
+                        return;
+                    }
+
                     node.Children.Add(new ConnectionTreeNodeViewModel(
                         $"{column.Name} : {column.DataType}", DbObjectKind.Column));
                 }

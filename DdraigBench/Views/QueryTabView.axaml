@@ -3,53 +3,77 @@
              xmlns:vm="using:DdraigBench.ViewModels"
              xmlns:controls="using:DdraigBench.Controls"
              xmlns:editor="using:AvaloniaEdit"
+             xmlns:ic="using:FluentIcons.Avalonia.Fluent"
              x:Class="DdraigBench.Views.QueryTabView"
              x:DataType="vm:QueryTabViewModel">
 
-    <Grid RowDefinitions="Auto,Auto,*,Auto">
-        <editor:TextEditor Grid.Row="0"
-                           Margin="8"
-                           Height="160"
-                           controls:EditorText.Text="{Binding Sql, Mode=TwoWay}"
-                           ShowLineNumbers="True"
-                           WordWrap="False"
-                           FontFamily="Cascadia Code,Consolas,Menlo,Monospace"
-                           HorizontalScrollBarVisibility="Auto"
-                           VerticalScrollBarVisibility="Auto" />
+    <Grid RowDefinitions="Auto,*,5,Auto" Background="{DynamicResource WorkbenchPanelBrush}">
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" Margin="12,10,12,8">
+            <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+                <Border Width="25" Height="25" CornerRadius="4" Background="{DynamicResource WorkbenchIconSurfaceBrush}">
+                    <ic:FluentIcon Icon="Table" IconSize="Size16" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <TextBlock Text="{Binding BrowserObjectName}" FontWeight="SemiBold" IsVisible="{Binding IsDataBrowser}" VerticalAlignment="Center" />
+                <TextBlock Text="SQL 编辑器" FontWeight="SemiBold" IsVisible="{Binding IsQueryEditor}" VerticalAlignment="Center" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
+                <Button Command="{Binding ExecuteCommand}" IsVisible="{Binding IsQueryEditor}" ToolTip.Tip="F5">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <ic:FluentIcon Icon="Play" IconSize="Size16" />
+                        <TextBlock Text="运行 F5" />
+                    </StackPanel>
+                </Button>
+                <Button Command="{Binding RefreshCommand}" IsVisible="{Binding IsDataBrowser}" ToolTip.Tip="Ctrl+R">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <ic:FluentIcon Icon="ArrowClockwise" IconSize="Size16" />
+                        <TextBlock Text="刷新 Ctrl+R" />
+                    </StackPanel>
+                </Button>
+                <Button Command="{Binding ExportCsvCommand}" IsEnabled="{Binding CanExport}" Content="导出 CSV" />
+            </StackPanel>
+        </Grid>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="8,0,8,6">
-            <TextBlock Text="每页行数" VerticalAlignment="Center" />
-            <NumericUpDown Value="{Binding PageSize}"
-                           Minimum="1"
-                           Maximum="100000"
-                           Increment="100"
-                           Width="120" />
-            <Button Command="{Binding PreviousPageCommand}"
-                    Content="◀ 上一页"
-                    IsEnabled="{Binding HasPreviousPage}" />
-            <TextBlock Text="{Binding CurrentPage, StringFormat='第 {0} 页'}"
-                       VerticalAlignment="Center"
-                       MinWidth="56"
-                       TextAlignment="Center" />
-            <Button Command="{Binding NextPageCommand}"
-                    Content="下一页 ▶"
-                    IsEnabled="{Binding CanGoToNextPage}" />
-            <TextBlock Text="（服务端 LIMIT/OFFSET 分页；网格按行虚拟化，只渲染可见行）"
-                       VerticalAlignment="Center"
-                       Opacity="0.7" />
-        </StackPanel>
+        <Grid Grid.Row="1" controls:WorkbenchLayout.QueryEditorVisible="{Binding IsQueryEditor}" MinHeight="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="2*" />
+                <RowDefinition Height="5" />
+                <RowDefinition Height="3*" />
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Margin="10,0" BorderBrush="{DynamicResource WorkbenchBorderBrush}" BorderThickness="1" CornerRadius="3"
+                    IsVisible="{Binding IsQueryEditor}">
+                <editor:TextEditor Margin="1"
+                                   controls:EditorText.Text="{Binding Sql, Mode=TwoWay}"
+                                   ShowLineNumbers="True"
+                                   WordWrap="False"
+                                   FontFamily="Cascadia Code,Consolas,Menlo,Monospace"
+                                   HorizontalScrollBarVisibility="Auto"
+                                   VerticalScrollBarVisibility="Auto" />
+            </Border>
+            <GridSplitter Grid.Row="1" Height="5" HorizontalAlignment="Stretch" Background="{DynamicResource WorkbenchBorderBrush}"
+                          IsVisible="{Binding IsQueryEditor}" />
 
-        <DataGrid Grid.Row="2"
-                  Margin="8,0"
-                  ItemsSource="{Binding Rows}"
-                  controls:ResultColumns.Headers="{Binding Columns}"
-                  AutoGenerateColumns="False"
-                  IsReadOnly="True"
-                  CanUserSortColumns="False" />
-
-        <TextBlock Grid.Row="3"
-                   Margin="8"
-                   Text="{Binding Status}"
-                   TextTrimming="CharacterEllipsis" />
+            <Grid Grid.Row="2" RowDefinitions="Auto,*,Auto" MinHeight="160">
+                <Border BorderBrush="{DynamicResource WorkbenchBorderBrush}" BorderThickness="0,0,0,1" Background="{DynamicResource WorkbenchSubtleBrush}" Padding="10,5">
+                    <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="7">
+                        <TextBlock Text="结果" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <Border Grid.Column="1" Width="1" Height="18" Background="{DynamicResource WorkbenchBorderBrush}" VerticalAlignment="Center" Margin="3,0" />
+                        <TextBlock Grid.Column="2" Text="每页" VerticalAlignment="Center" />
+                        <NumericUpDown Grid.Column="3" Value="{Binding PageSize}" Minimum="1" Maximum="100000" Increment="100" Width="100" HorizontalAlignment="Left" />
+                        <Button Grid.Column="4" Command="{Binding PreviousPageCommand}" IsEnabled="{Binding HasPreviousPage}" Content="‹ 上一页" />
+                        <TextBlock Grid.Column="5" Text="{Binding CurrentPage, StringFormat='第 {0} 页'}" MinWidth="60" TextAlignment="Center" VerticalAlignment="Center" />
+                        <Button Grid.Column="6" Command="{Binding NextPageCommand}" IsEnabled="{Binding CanGoToNextPage}" Content="下一页 ›" />
+                    </Grid>
+                </Border>
+                <DataGrid Grid.Row="1" Margin="0" ItemsSource="{Binding Rows}"
+                          controls:ResultColumns.Headers="{Binding Columns}"
+                          AutoGenerateColumns="False" IsReadOnly="True" CanUserSortColumns="False" />
+                <Border Grid.Row="2" Background="{DynamicResource WorkbenchSubtleBrush}" BorderBrush="{DynamicResource WorkbenchBorderBrush}" BorderThickness="0,1,0,0" Padding="10,5">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="只读" Foreground="{DynamicResource WorkbenchMutedTextBrush}" VerticalAlignment="Center" IsVisible="{Binding IsDataBrowser}" />
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
     </Grid>
 </UserControl>

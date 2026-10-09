@@ -8,16 +8,16 @@
         Title="{Binding Title}"
         WindowStartupLocation="CenterOwner">
 
-    <DockPanel Margin="12" LastChildFill="True">
-        <TextBlock DockPanel.Dock="Top"
-                   Margin="0,0,0,8"
-                   Opacity="0.7"
-                   Text="Ctrl+A / Ctrl+C 可复制" />
+    <DockPanel Margin="16" LastChildFill="True">
+        <Border DockPanel.Dock="Top" Background="{DynamicResource WorkbenchSubtleBrush}" BorderBrush="{DynamicResource WorkbenchBorderBrush}" BorderThickness="1" CornerRadius="4"
+                Padding="10,7" Margin="0,0,0,9">
+            <TextBlock Opacity="0.75" Text="DDL 定义 · Ctrl+A 全选 · Ctrl+C 复制" />
+        </Border>
 
         <Button DockPanel.Dock="Bottom"
                 Content="关闭"
                 HorizontalAlignment="Right"
-                Margin="0,8,0,0"
+                 Margin="0,9,0,0"
                 Command="{Binding CloseCommand}" />
 
         <TextBox Text="{Binding Ddl, Mode=OneWay}"
@@ -25,6 +25,9 @@
                  AcceptsReturn="True"
                  TextWrapping="NoWrap"
                  FontFamily="Cascadia Code,Consolas,Menlo,Monospace"
+                 FontSize="12"
+                 BorderBrush="{DynamicResource WorkbenchBorderBrush}"
+                 BorderThickness="1"
                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
                  ScrollViewer.VerticalScrollBarVisibility="Auto" />
     </DockPanel>

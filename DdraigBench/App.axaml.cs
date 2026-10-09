@@ -11,15 +11,47 @@ namespace DdraigBench;
 
 public partial class App : Application
 {
+    private readonly ThemePreferenceStore _themeStore = new();
+
+    public ThemeMode CurrentThemeMode { get; private set; } = ThemeMode.System;
+
+    public async Task SetThemeModeAsync(ThemeMode mode)
+    {
+        CurrentThemeMode = mode;
+        RequestedThemeVariant = mode switch
+        {
+            ThemeMode.Light => Avalonia.Styling.ThemeVariant.Light,
+            ThemeMode.Dark => Avalonia.Styling.ThemeVariant.Dark,
+            _ => Avalonia.Styling.ThemeVariant.Default,
+        };
+
+        await Task.CompletedTask;
+    }
+
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
     }
 
-    public override void OnFrameworkInitializationCompleted()
+    public override async void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            try
+            {
+                CurrentThemeMode = await _themeStore.LoadAsync();
+            }
+            catch (IOException)
+            {
+                CurrentThemeMode = ThemeMode.System;
+            }
+            RequestedThemeVariant = CurrentThemeMode switch
+            {
+                ThemeMode.Light => Avalonia.Styling.ThemeVariant.Light,
+                ThemeMode.Dark => Avalonia.Styling.ThemeVariant.Dark,
+                _ => Avalonia.Styling.ThemeVariant.Default,
+            };
+
             var window = new MainWindow();
             var filePicker = new StorageProviderFilePicker(window);
             var viewModel = new MainViewModel(
@@ -29,7 +61,9 @@ public partial class App : Application
                 filePicker,
                 new ExportDialog(() => window, filePicker),
                 new DdlViewer(() => window),
-                new SecretConnectionStoreFactory());
+                new SecretConnectionStoreFactory(),
+                _themeStore,
+                SetThemeModeAsync);
 
             window.DataContext = viewModel;
             desktop.MainWindow = window;

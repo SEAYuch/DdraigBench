@@ -33,4 +33,43 @@ public sealed class HeadlessUiTests
 
         Assert.Empty(grid.Columns);
     }
+
+    [Fact]
+    public void Navigator_collapse_and_restore_preserves_splitter_width()
+    {
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("320,5,*"),
+        };
+
+        WorkbenchLayout.SetNavigatorVisible(grid, false);
+
+        Assert.Equal(0, grid.ColumnDefinitions[0].Width.Value);
+        Assert.Equal(0, grid.ColumnDefinitions[1].Width.Value);
+
+        WorkbenchLayout.SetNavigatorVisible(grid, true);
+
+        Assert.Equal(320, grid.ColumnDefinitions[0].Width.Value);
+        Assert.Equal(5, grid.ColumnDefinitions[1].Width.Value);
+    }
+
+    [Fact]
+    public void Query_editor_collapse_and_restore_keeps_adjustable_split()
+    {
+        var grid = new Grid
+        {
+            RowDefinitions = new RowDefinitions("3*,5,2*"),
+        };
+
+        WorkbenchLayout.SetQueryEditorVisible(grid, false);
+
+        Assert.Equal(0, grid.RowDefinitions[0].Height.Value);
+        Assert.Equal(0, grid.RowDefinitions[1].Height.Value);
+
+        WorkbenchLayout.SetQueryEditorVisible(grid, true);
+
+        Assert.Equal(3, grid.RowDefinitions[0].Height.Value);
+        Assert.Equal(GridUnitType.Star, grid.RowDefinitions[0].Height.GridUnitType);
+        Assert.Equal(5, grid.RowDefinitions[1].Height.Value);
+    }
 }

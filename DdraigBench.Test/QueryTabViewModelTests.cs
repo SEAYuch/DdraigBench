@@ -34,7 +34,7 @@ public sealed class QueryTabViewModelTests
     }
 
     [Fact]
-    public async Task Cancel_requested_before_execute_reports_cancelled()
+    public async Task Cancel_while_idle_is_inert()
     {
         using var db = new TempSqliteDatabase();
         using var factory = new FreeSqlFactory();
@@ -44,8 +44,8 @@ public sealed class QueryTabViewModelTests
         tab.Cancel();
         await tab.ExecuteAsync();
 
-        Assert.Equal("已取消", tab.Status);
-        Assert.Empty(tab.Rows);
+        Assert.Equal(new[] { "1" }, tab.Columns);
+        Assert.Single(tab.Rows);
         Assert.False(tab.IsExecuting);
     }
 

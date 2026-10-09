@@ -2,6 +2,7 @@ bin/
 obj/
 .idea/
 .kilo/
+.workbuddy/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/

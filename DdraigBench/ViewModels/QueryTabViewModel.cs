@@ -31,17 +31,23 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     private IReadOnlyList<object?[]> _rows = Array.Empty<object?[]>();
     private string _status = "就绪";
     private bool _isExecuting;
+    private readonly string? _browserObjectKey;
+    private readonly string? _browserObjectName;
 
     public QueryTabViewModel(
         string header,
         Func<DbSession?> sessionProvider,
         IFilePicker filePicker,
-        IExportDialog exportDialog)
+        IExportDialog exportDialog,
+        string? browserObjectKey = null,
+        string? browserObjectName = null)
     {
         Header = header;
         _sessionProvider = sessionProvider;
         _filePicker = filePicker;
         _exportDialog = exportDialog;
+        _browserObjectKey = browserObjectKey;
+        _browserObjectName = browserObjectName;
         ExecuteCommand = ReactiveCommand.CreateFromTask(ExecuteAsync);
         CancelCommand = ReactiveCommand.Create(Cancel);
         NextPageCommand = ReactiveCommand.CreateFromTask(NextPageAsync);
@@ -50,9 +56,18 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
         RollbackCommand = ReactiveCommand.CreateFromTask(RollbackAsync);
         ExportCsvCommand = ReactiveCommand.CreateFromTask(ExportCsvAsync);
         ExportInsertCommand = ReactiveCommand.CreateFromTask(ExportInsertAsync);
+        RefreshCommand = ReactiveCommand.CreateFromTask(ExecuteAsync);
     }
 
     public string Header { get; }
+
+    public bool IsDataBrowser => _browserObjectKey is not null;
+
+    public bool IsQueryEditor => !IsDataBrowser;
+
+    public string? BrowserObjectKey => _browserObjectKey;
+
+    public string? BrowserObjectName => _browserObjectName;
 
     public ICommand ExecuteCommand { get; }
 
@@ -60,7 +75,9 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
 
 public ICommand NextPageCommand { get; }
 
-public ICommand PreviousPageCommand { get; }
+    public ICommand PreviousPageCommand { get; }
+
+    public ICommand RefreshCommand { get; }
 
     public ICommand CommitCommand { get; }
 
@@ -162,6 +179,11 @@ public ICommand PreviousPageCommand { get; }
     /// <summary>请求取消当前执行；在“执行刚开始”时按下也能生效。</summary>
     public void Cancel()
     {
+        if (!IsExecuting)
+        {
+            return;
+        }
+
         _cancelRequested = true;
         try
         {

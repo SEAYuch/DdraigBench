@@ -185,10 +185,10 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 │   ├── Program.cs / App.axaml
 │   ├── Assets/
 │   ├── Services/                # IFilePicker（开+存）+ StorageProviderFilePicker + IConnectionDialog + IExportDialog + IDdlViewer（M1-6 / M2-b / M4-2 / M4-3）+ IConnectionStoreFactory/SecretConnectionStoreFactory（M4-4 接线）
-│   ├── Controls/                # 附加属性：ResultColumns（DataGrid 动态列）+ EditorText（TextEditor 文本同步）
+│   ├── Controls/                # 附加属性：ResultColumns（DataGrid 动态列）+ EditorText（TextEditor 文本同步）+ 树/连接双击命令桥接
 │   ├── Views/                   # axaml + code-behind（仅 InitializeComponent）
-│   │   ├── MainWindow.axaml     # 布局：顶部明文告警条 + 工具栏 | 左「已保存连接」+ 连接树 | 中 Tab 区 | 底状态面板（M1-6 / M4-4 接线）
-│   │   ├── QueryTabView.axaml   # AvaloniaEdit SQL 编辑器 + 结果 DataGrid（M1-6 / M3-3）
+│   │   ├── MainWindow.axaml     # Navicat-inspired 工作台：命令栏 | 左连接 Navigator + 对象树 | 中工作区 Tab | 底状态栏
+│   │   ├── QueryTabView.axaml   # 查询编辑器/结果可调上下分区；表/视图只读数据浏览分页网格
 │   │   └── ConnectionDialogView.axaml   # 按 Provider 出参数表（M2-b）
 │   │   ├── ExportDialogView.axaml      # 导出对话框（M4-2）
 │   │   └── DdlView.axaml               # DDL 预览窗口（M4-3）
@@ -358,6 +358,13 @@ public sealed class DbSession : IAsyncDisposable
 - 交互能力（文件选择等）以接口注入 VM（如 `IFilePicker`/`StorageProviderFilePicker`），保持 VM 零 Avalonia 依赖且可单测。
 - 结果网格用**普通 `DataGrid` + 附加属性** `ResultColumns.Headers`（`Controls/ResultColumns.cs`）按列头动态生成列；单元格用 `DataGridTemplateColumn` + `FuncDataTemplate<object?[]>` 从行数组直取（**不经绑定引擎**）。**不派生 `DataGrid`**。
 - （教训）**派生自 Avalonia 主题化控件的自定义控件必须 override `StyleKeyOverride`**，否则 `ControlTheme` 按派生类型查不到 → 模板缺失 → **整块不渲染且无报错**。M1 首选改用**附加属性**正是为了避开这类派生陷阱。
+- 工作台借鉴 Navicat 的连接 Navigator / 对象树 / 标签工作区交互，但视觉继续使用 FluentAvalonia + FluentIcons，不增加第二套主题或图标包；密集工具栏、导航器与工作区之间应有清晰边界，可通过 splitter 调整导航器宽度并收起。
+- 应用外观支持「跟随系统 / 浅色 / 深色」；默认跟随操作系统。选择持久化到 LocalApplicationData 下单独的 `ui-settings.json`，工作台自定义面板/边框/文字/状态色必须使用跟随 `RequestedThemeVariant` 更新的语义资源，禁止硬编码单一主题表面色。
+- **连接 UX 仍为单活动连接**：左侧保存连接清单双击激活；切换连接会关闭旧会话及其所有标签，不暗示多个连接并行存在。
+- 对象树层级：SQLite/MySQL「库 → 非空对象类型组 → 对象 → 列」；PostgreSQL「库 → 模式 → 非空对象类型组 → 对象 → 列」。类型组是壳层展示节点（`Kind=null`、`GroupLabel` 有值），不是 `DbObjectKind` 对象；DDL/浏览命令必须以真实对象节点的 Kind 判定。
+- 对象树筛选只检查**已加载节点**，不查询数据库、不展开惰性节点；过滤时保留含匹配后代的祖先，清空筛选恢复已加载树。
+- 表/视图双击或上下文命令打开只读分页数据标签，使用 dialect 分别引用容器与对象标识符；表有主键元数据时以主键作为稳定默认排序，否则依赖数据库返回顺序。相同活动连接/容器/类型/对象复用原标签且保留页码。不做行编辑、插入、删除、用户排序或筛选。连接切换照旧处置全部标签。
+- 查询标签编辑器/结果网格上下可拖动分割；数据浏览标签隐藏编辑器，只呈现只读网格与分页。快捷键：`Ctrl+N` 新建查询、`F5` 执行选中查询标签、`Esc` 取消正在执行的查询、`Ctrl+R` 刷新数据浏览标签并回到第一页（查询标签不受 Ctrl+R 影响）。
 - `TextEditor.Text`（AvaloniaEdit）**不是 `AvaloniaProperty`**，不能直接绑定（README 也只演示字面量）→ 用附加属性 `Controls/EditorText.Text` 双向同步（M3-3）。
 - 左树展开是 **fire-and-forget**（`ConnectionTreeNodeViewModel` 里 `_ = _loadChildren(this)`）→ loader 内部**必须** try/catch 并把失败写进 `Status`（M5-1），否则元数据查询失败会变成未观察的任务异常被静默吞掉，用户只看到"树是空的"。
 
@@ -378,7 +385,7 @@ public sealed class DbSession : IAsyncDisposable
    - ✅ **触发器 / 函数 / 存储过程清单**：三方方言均可列；SQLite 的触发器还能直接给出完整定义。
    - ✅ **模式层（M5-2）**：`DbObjectKind.Schema` + PG 的 `pg_namespace` 清单；树变成「库 → 模式 → 对象」，SQLite/MySQL 保持「库 → 对象」。PG 的库清单同时收窄为当前库。
    - ⏳ **仍缺**（后续）：事件（MySQL `information_schema.EVENTS`）与分区（`information_schema.PARTITIONS`）；MySQL/PG 的**触发器与例程定义**（需 `SHOW CREATE TRIGGER` / `pg_get_functiondef`，或按 `information_schema.TRIGGERS`/`PARAMETERS` 逐列拼装）；MySQL 的表定义（只能走 `SHOW CREATE TABLE`，多列且列名不固定，未纳入契约）；PG 物化视图（`relkind='m'`）。
-4. 树节点惰性加载：展开才查子级。**实际层级**：SQLite/MySQL = 「库 → 表/视图/触发器/存储过程/函数 → 列」，PostgreSQL = 「库 → 模式 → 表/视图/触发器/存储过程/函数 → 列」。库节点下**平铺**（不做"表/视图"分组文件夹），这是既有取舍，改动前先想清楚。§6.3 原本写的"库→模式→表→列四级"是目标形态，M5-2 起 PG 已达成。
+4. 树节点惰性加载：展开才查子级。当前壳层展示层级：SQLite/MySQL = 「库 → 非空对象类型组 → 对象 → 列」，PostgreSQL = 「库 → 模式 → 非空对象类型组 → 对象 → 列」。类型组只是壳层节点，不属于 `DbObjectKind`；Core 元数据契约仍按容器取对象。
 
 ---
 

@@ -9,26 +9,40 @@
         Title="{Binding Title}"
         WindowStartupLocation="CenterOwner">
 
-    <StackPanel Margin="16" Spacing="6">
-        <TextBlock Text="保存位置" />
+    <Window.Styles>
+        <Style Selector="TextBlock.field-label">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,5,0,0" />
+        </Style>
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="{DynamicResource WorkbenchAccentBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource WorkbenchAccentTextBrush}" />
+        </Style>
+        <Style Selector="TextBlock.error-message">
+            <Setter Property="Foreground" Value="{DynamicResource WorkbenchErrorTextBrush}" />
+        </Style>
+    </Window.Styles>
+
+    <StackPanel Margin="22" Spacing="8">
+        <TextBlock Text="保存位置" Classes="field-label" />
         <Grid ColumnDefinitions="*,Auto">
             <TextBox Grid.Column="0" Text="{Binding FilePath}" />
             <Button Grid.Column="1" Margin="8,0,0,0" Content="浏览…" Command="{Binding BrowseCommand}" />
         </Grid>
 
         <StackPanel IsVisible="{Binding IsInsert}" Spacing="6">
-            <TextBlock Text="目标表名（INSERT INTO …）" />
+            <TextBlock Text="目标表名（INSERT INTO …）" Classes="field-label" />
             <TextBox Text="{Binding TableName}" />
         </StackPanel>
 
-        <TextBlock Text="{Binding Error}"
+        <TextBlock Classes="error-message" Text="{Binding Error}"
                    IsVisible="{Binding HasError}"
-                   Foreground="#C42B1C"
                    TextWrapping="Wrap" />
 
         <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,10,0,0">
             <Button Grid.Column="1" Content="取消" Command="{Binding CancelCommand}" Margin="0,0,8,0" />
-            <Button Grid.Column="2" Content="导出" Command="{Binding ConfirmCommand}" IsEnabled="{Binding CanConfirm}" />
+            <Button Grid.Column="2" Classes="primary" Content="导出" Command="{Binding ConfirmCommand}" IsEnabled="{Binding CanConfirm}" />
         </Grid>
     </StackPanel>
 

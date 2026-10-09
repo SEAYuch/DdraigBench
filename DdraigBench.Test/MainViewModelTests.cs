@@ -10,6 +10,22 @@ namespace DdraigBench.Test;
 
 public sealed class MainViewModelTests
 {
+    private sealed class StubThemePreferenceStore(ThemeMode mode = ThemeMode.System) : IThemePreferenceStore
+    {
+        public ThemeMode Mode { get; private set; } = mode;
+
+        public int SaveCount { get; private set; }
+
+        public Task<ThemeMode> LoadAsync(CancellationToken cancellationToken = default) => Task.FromResult(Mode);
+
+        public Task SaveAsync(ThemeMode mode, CancellationToken cancellationToken = default)
+        {
+            Mode = mode;
+            SaveCount++;
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class StubConnectionDialog(ConnectionProfile? profile) : IConnectionDialog
     {
         public Task<ConnectionProfile?> ShowAsync() => Task.FromResult(profile);
@@ -82,7 +98,9 @@ public sealed class MainViewModelTests
         database.IsExpanded = true;
         await WaitUntilAsync(() => database.Children.Count > 0);
 
-        Assert.Contains(database.Children, c => c.Name == "t1");
+        var tableGroup = Assert.Single(database.Children);
+        Assert.Equal("表", tableGroup.Name);
+        Assert.Contains(tableGroup.Children, c => c.Name == "t1");
     }
 
     [Fact]
@@ -138,7 +156,7 @@ public sealed class MainViewModelTests
         databaseNode.IsExpanded = true;
         await WaitUntilAsync(() => databaseNode.Children.Count > 0);
 
-        vm.SelectedNode = databaseNode.Children.Single();
+        vm.SelectedNode = databaseNode.Children.Single().Children.Single();
         Assert.True(vm.CanPreviewDdl);
 
         await vm.PreviewDdlAsync();
@@ -300,10 +318,10 @@ public sealed class MainViewModelTests
 
         var database = vm.Databases.Single();
         database.IsExpanded = true;
-        await WaitUntilAsync(() => database.Children.Any(c => c.Name == "trg_t1"));
+        await WaitUntilAsync(() => database.Children.Any(c => c.Name == "触发器"));
 
         // §6.2 缺口：IDbFirst 完全看不到触发器，M5-1 起由目录查询补齐
-        var trigger = database.Children.Single(c => c.Name == "trg_t1");
+        var trigger = database.Children.Single(c => c.Name == "触发器").Children.Single(c => c.Name == "trg_t1");
         Assert.Equal(DbObjectKind.Trigger, trigger.Kind);
 
         vm.SelectedNode = trigger;
@@ -372,7 +390,9 @@ public sealed class MainViewModelTests
         publicSchema.IsExpanded = true;
         await WaitUntilAsync(() => publicSchema.Children.Count > 0);
 
-        var table = publicSchema.Children.Single();
+        var tableGroup = publicSchema.Children.Single();
+        Assert.Equal("表", tableGroup.Name);
+        var table = tableGroup.Children.Single();
         Assert.Equal("t1", table.Name);
         Assert.Equal(DbObjectKind.Table, table.Kind);
         // 关键：对象的容器是**模式**而不是库——传错会让 DDL 预览取不到对象
@@ -388,7 +408,7 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public async Task Database_node_without_schemas_stays_flat()
+    public async Task Database_node_without_schemas_groups_objects_by_kind()
     {
         using var db = new TempSqliteDatabase();
         using var seed = db.CreateFsql();
@@ -410,10 +430,127 @@ public sealed class MainViewModelTests
         database.IsExpanded = true;
         await WaitUntilAsync(() => database.Children.Count > 0);
 
-        // 无模式 → 对象直接挂在库节点下（与 M5-1 的树形一致），且容器是库名
-        var table = database.Children.Single();
+        // 无模式 → 类型分组挂在库节点下，真实对象仍以库名为容器
+        var tableGroup = database.Children.Single();
+        Assert.Equal("表", tableGroup.Name);
+        var table = tableGroup.Children.Single();
         Assert.Equal("t1", table.Name);
         Assert.Equal("main", table.Container);
+    }
+
+    [Fact]
+    public async Task Tree_filter_keeps_matching_ancestors_without_loading_unexpanded_databases()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery("CREATE TABLE customer_orders (id INTEGER PRIMARY KEY)");
+        var vm = CreateViewModel(db);
+        await vm.OpenConnectionAsync();
+
+        var database = Assert.Single(vm.Databases);
+        vm.TreeFilter = "main";
+        Assert.Single(vm.VisibleDatabases);
+        Assert.Empty(database.Children); // filter must not trigger lazy loading
+
+        database.IsExpanded = true;
+        await WaitUntilAsync(() => database.Children.Count > 0);
+        vm.TreeFilter = "customer";
+        var tableGroup = Assert.Single(database.Children);
+        Assert.Single(tableGroup.VisibleChildren);
+        Assert.Equal("customer_orders", tableGroup.VisibleChildren.Single().Name);
+
+        vm.TreeFilter = "missing";
+        Assert.Empty(vm.VisibleDatabases);
+        Assert.Single(database.Children); // loaded nodes remain loaded while filtered out
+    }
+
+    [Fact]
+    public async Task Opening_table_creates_read_only_paged_browser_and_reuses_it()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery("CREATE TABLE \"odd.table\" (id INTEGER PRIMARY KEY, label TEXT)");
+        seed.Ado.ExecuteNonQuery("INSERT INTO \"odd.table\" VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+        var vm = CreateViewModel(db);
+        await vm.OpenConnectionAsync();
+
+        var database = Assert.Single(vm.Databases);
+        database.IsExpanded = true;
+        await WaitUntilAsync(() => database.Children.Count > 0);
+        var table = database.Children.Single().Children.Single();
+
+        await vm.OpenDataAsync(table);
+
+        var tab = vm.SelectedTab!;
+        Assert.True(tab.IsDataBrowser);
+        Assert.Contains("\"main\".\"odd.table\"", tab.Sql);
+        Assert.Equal(3, tab.Rows.Count);
+        Assert.Equal(new[] { "id", "label" }, tab.Columns);
+        Assert.False(tab.HasTransaction);
+
+        tab.PageSize = 1;
+        await tab.ExecuteAsync();
+        await tab.NextPageAsync();
+        Assert.Equal(2, tab.CurrentPage);
+
+        await vm.OpenDataAsync(table);
+        Assert.Same(tab, vm.SelectedTab);
+        Assert.Equal(2, vm.Tabs.Count); // the connection creates an initial query tab
+        Assert.Equal(2, tab.CurrentPage);
+
+        await vm.RefreshSelectedDataAsync();
+        Assert.Equal(1, tab.CurrentPage);
+        Assert.Single(tab.Rows);
+    }
+
+    [Theory]
+    [InlineData(DataType.Sqlite, "main", "odd.table", "SELECT * FROM \"main\".\"odd.table\"")]
+    [InlineData(DataType.MySql, "sales`west", "order.items", "SELECT * FROM `sales``west`.`order.items`")]
+    [InlineData(DataType.PostgreSQL, "sales\"west", "order.items", "SELECT * FROM \"sales\"\"west\".\"order.items\"")]
+    public void Data_select_quotes_each_qualified_identifier_component(DataType provider, string container, string name, string expected)
+    {
+        Assert.Equal(expected, MainViewModel.BuildDataSelect(provider, container, name));
+    }
+
+    [Fact]
+    public async Task Theme_preference_loads_and_selection_is_persisted_and_applied()
+    {
+        var themeStore = new StubThemePreferenceStore(ThemeMode.Dark);
+        var applied = new List<ThemeMode>();
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()), themeStore,
+            mode =>
+            {
+                applied.Add(mode);
+                return Task.CompletedTask;
+            });
+
+        await vm.InitializeAsync();
+
+        Assert.Equal("深色", vm.SelectedThemeName);
+        Assert.Equal([ThemeMode.Dark], applied);
+
+        await vm.SetThemeAsync(ThemeMode.Light);
+
+        Assert.Equal("浅色", vm.SelectedThemeName);
+        Assert.Equal(ThemeMode.Light, themeStore.Mode);
+        Assert.Equal(1, themeStore.SaveCount);
+        Assert.Equal([ThemeMode.Dark, ThemeMode.Light], applied);
+    }
+
+    [Fact]
+    public async Task Theme_preference_store_defaults_to_system_and_round_trips()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ddb-theme-{Guid.NewGuid():N}", "ui-settings.json");
+        var store = new ThemePreferenceStore(path);
+
+        Assert.Equal(ThemeMode.System, await store.LoadAsync());
+        await store.SaveAsync(ThemeMode.Dark);
+        Assert.Equal(ThemeMode.Dark, await store.LoadAsync());
+
+        Directory.Delete(Path.GetDirectoryName(path)!, recursive: true);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

@@ -71,7 +71,7 @@ public sealed class MultiDialectIntegrationTests
         if (dataType == DataType.PostgreSQL)
         {
             var currentDatabase = Convert.ToString(session.Fsql.Ado.ExecuteScalar("SELECT current_database()"));
-            Assert.Equal(new[] { currentDatabase }, databases);
+            Assert.Equal(new[] { currentDatabase! }, databases);
         }
 
         // M5-2：模式层。PG 有且当前模式必在其中；MySQL 的库即模式，必须为空集（树不加这一层）
