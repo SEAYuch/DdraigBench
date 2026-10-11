@@ -56,6 +56,60 @@ public sealed class PagedSqlTests
         var sql = PagedSql.Build("  SELECT id FROM t;  ", SqliteDialect.Instance, 10, 0);
 
         Assert.Equal("SELECT * FROM (SELECT id FROM t) AS \"ddb_page\" LIMIT 10 OFFSET 0", sql);
+
+        // 连续分号（空语句）同样只当结尾符号处理
+        Assert.Equal("SELECT * FROM (SELECT id FROM t) AS \"ddb_page\" LIMIT 10 OFFSET 0",
+            PagedSql.Build("SELECT id FROM t;;", SqliteDialect.Instance, 10, 0));
+    }
+
+    [Fact]
+    public void Semicolon_inside_a_literal_is_not_a_statement_end()
+    {
+        var sql = PagedSql.Build("SELECT ';' AS s FROM t", SqliteDialect.Instance, 10, 0);
+
+        Assert.Equal("SELECT * FROM (SELECT ';' AS s FROM t) AS \"ddb_page\" LIMIT 10 OFFSET 0", sql);
+    }
+
+    [Theory]
+    [InlineData("SELECT 1; SELECT 2")]
+    [InlineData("CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1)")]
+    [InlineData("SELECT 1; -- 后面还有一句\nSELECT 2")]
+    public void Multi_statement_scripts_are_left_alone(string sql)
+    {
+        // M2：多语句脚本包进派生表必然是语法错误（`near ";": syntax error`），原样执行
+        Assert.Null(PagedSql.Build(sql, SqliteDialect.Instance, 100, 0));
+    }
+
+    [Fact]
+    public void Trailing_line_comment_does_not_swallow_the_closing_parenthesis()
+    {
+        // M1：`-- …` 吃到行尾，注释后面必须补换行，否则右括号会被吞掉
+        var sql = PagedSql.Build("SELECT id FROM t -- 只看这一页", SqliteDialect.Instance, 10, 0);
+
+        Assert.Equal(
+            "SELECT * FROM (SELECT id FROM t -- 只看这一页\n) AS \"ddb_page\" LIMIT 10 OFFSET 0",
+            sql);
+    }
+
+    [Fact]
+    public void Leading_comment_does_not_hide_the_query()
+    {
+        var sql = PagedSql.Build("-- 本月订单\nSELECT id FROM t", SqliteDialect.Instance, 10, 0);
+
+        Assert.NotNull(sql);
+        Assert.StartsWith("SELECT * FROM (-- 本月订单\nSELECT id FROM t)", sql, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("SELECT id FROM t -- LIMIT 3")]
+    [InlineData("SELECT id FROM t /* LIMIT 3 */")]
+    public void Keywords_inside_comments_are_not_mistaken_for_paging(string sql)
+    {
+        // 注释里的 LIMIT 不算"已分页"：否则会被判定为"用户自带分页"而整块关掉服务端分页
+        var paged = PagedSql.Build(sql, SqliteDialect.Instance, 10, 0);
+
+        Assert.NotNull(paged);
+        Assert.EndsWith("LIMIT 10 OFFSET 0", paged, StringComparison.Ordinal);
     }
 
     [Theory]

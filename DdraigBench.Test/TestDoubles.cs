@@ -121,6 +121,44 @@ internal sealed class ThrowingMetadataExplorer : IMetadataExplorer
         Task.FromResult<string?>(null);
 }
 
+/// <summary>
+/// 库清单可挂起 / 可失败的元数据替身：验证「并发连接被挡下」与「连接失败不留死会话」两条壳层路径。
+/// </summary>
+internal sealed class GatedMetadataExplorer : IMetadataExplorer
+{
+    private readonly TaskCompletionSource _databases = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public int DatabaseQueryCount { get; private set; }
+
+    public Exception? DatabasesFailure { get; init; }
+
+    public void ReleaseDatabases() => _databases.TrySetResult();
+
+    public async Task<IReadOnlyList<string>> GetDatabasesAsync(DbSession session, CancellationToken ct = default)
+    {
+        DatabaseQueryCount++;
+        if (DatabasesFailure is not null)
+        {
+            throw DatabasesFailure;
+        }
+
+        await _databases.Task.ConfigureAwait(false);
+        return ["main"];
+    }
+
+    public Task<IReadOnlyList<DbObjectInfo>> GetObjectsAsync(
+        DbSession session, string database, DbObjectKind kind, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<DbObjectInfo>>([]);
+
+    public Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<DbColumnInfo>>([]);
+
+    public Task<string?> GetDdlAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        Task.FromResult<string?>(null);
+}
+
 internal sealed class StubExportDialog(ExportTarget? target = null) : IExportDialog
 {
     public ExportTarget? Target { get; set; } = target;
@@ -210,4 +248,40 @@ internal sealed class StubConnectionStoreFactory(StubConnectionStore? store = nu
         Store?.CreateFailure is { } failure
             ? Task.FromException<IConnectionStore>(failure)
             : Task.FromResult<IConnectionStore>(Store!);
+}
+
+/// <summary>
+/// 记录 <see cref="CreateAsync"/> / <c>LoadAsync</c> / <c>SaveAsync</c> 各落在哪个托管线程：
+/// 壳层必须把密钥库探测与清单读写放到后台线程（AGENTS §5），否则 macOS 钥匙串的同步 P/Invoke 会卡 UI。
+/// </summary>
+internal sealed class ThreadRecordingConnectionStoreFactory : IConnectionStoreFactory
+{
+    public int CreateThreadId { get; private set; }
+
+    public int LoadThreadId { get; private set; }
+
+    public int SaveThreadId { get; private set; }
+
+    public Task<IConnectionStore> CreateAsync(CancellationToken ct = default)
+    {
+        CreateThreadId = Environment.CurrentManagedThreadId;
+        return Task.FromResult<IConnectionStore>(new RecordingStore(this));
+    }
+
+    private sealed class RecordingStore(ThreadRecordingConnectionStoreFactory owner) : IConnectionStore
+    {
+        public ISecretProtector Protector { get; } = new FakeSecretProtector("stub-encrypted", isEncrypted: true);
+
+        public Task<IReadOnlyList<ConnectionProfile>> LoadAsync(CancellationToken ct = default)
+        {
+            owner.LoadThreadId = Environment.CurrentManagedThreadId;
+            return Task.FromResult<IReadOnlyList<ConnectionProfile>>([]);
+        }
+
+        public Task SaveAsync(IReadOnlyList<ConnectionProfile> profiles, CancellationToken ct = default)
+        {
+            owner.SaveThreadId = Environment.CurrentManagedThreadId;
+            return Task.CompletedTask;
+        }
+    }
 }

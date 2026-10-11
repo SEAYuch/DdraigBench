@@ -109,4 +109,19 @@ public sealed class QueryRunnerTests
         Assert.False(result.Truncated);
         Assert.Equal(3, result.Rows.Count);
     }
+
+    [Fact]
+    public async Task Cancellation_is_surfaced_as_an_exception_not_as_an_error_text()
+    {
+        using var db = new TempSqliteDatabase();
+        using var fsql = db.CreateFsql();
+        var runner = new QueryRunner(fsql);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // 取消必须抛 OperationCanceledException：调用方（查询标签）要能区分"用户取消"与"SQL 出错"（M10）
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => runner.ExecuteAsync("SELECT 1 AS n", ct: cts.Token));
+    }
 }

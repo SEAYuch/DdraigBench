@@ -47,17 +47,28 @@ public sealed class ConnectionStore(string filePath, ISecretProtector protector)
             return Array.Empty<ConnectionProfile>();
         }
 
+        // 版本比本程序新：宁可报错也不要按旧结构解读后覆盖——未知格式一律当"读不出来"处理，
+        // 由调用方（MainViewModel）收敛成告警并停用持久化（见 H3/C1 的同类处理）。
+        if (file.Version > CurrentVersion)
+        {
+            throw new NotSupportedException(
+                $"连接清单版本 {file.Version} 高于本程序支持的版本 {CurrentVersion}，请升级 DdraigBench 后再试（{FilePath}）");
+        }
+
         var effective = string.Equals(file.Protector, Protector.Name, StringComparison.Ordinal)
             ? Protector
             : SecretProtectors.CreateByName(file.Protector);
 
-        var profiles = new List<ConnectionProfile>(file.Connections.Count);
-        foreach (var stored in file.Connections)
+        // JSON 里写成 "connections": null 时，反序列化同样会把集合置空 → 不判空即 NRE
+        var stored = file.Connections ?? [];
+
+        var profiles = new List<ConnectionProfile>(stored.Count);
+        foreach (var connection in stored)
         {
             profiles.Add(new ConnectionProfile(
-                stored.Name,
-                stored.DataType,
-                await effective.UnprotectAsync(stored.ProtectedConnectionString, ct)));
+                connection.Name,
+                connection.DataType,
+                await effective.UnprotectAsync(connection.ProtectedConnectionString, ct)));
         }
 
         return profiles;

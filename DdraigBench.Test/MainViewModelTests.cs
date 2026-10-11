@@ -16,7 +16,10 @@ public sealed class MainViewModelTests
 
         public int SaveCount { get; private set; }
 
-        public Task<ThemeMode> LoadAsync(CancellationToken cancellationToken = default) => Task.FromResult(Mode);
+        public Exception? LoadFailure { get; init; }
+
+        public Task<ThemeMode> LoadAsync(CancellationToken cancellationToken = default) =>
+            LoadFailure is not null ? Task.FromException<ThemeMode>(LoadFailure) : Task.FromResult(Mode);
 
         public Task SaveAsync(ThemeMode mode, CancellationToken cancellationToken = default)
         {
@@ -54,6 +57,16 @@ public sealed class MainViewModelTests
             new StubDdlViewer(),
             storeFactory);
 
+    private static MainViewModel CreateViewModelWithExplorer(ConnectionProfile dialogProfile, IMetadataExplorer explorer) =>
+        new(
+            new StubConnectionDialog(dialogProfile),
+            new FreeSqlFactory(),
+            explorer,
+            new StubFilePicker(),
+            new StubExportDialog(),
+            new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()));
+
     [Fact]
     public async Task Open_populates_databases_and_opens_a_query_tab()
     {
@@ -81,6 +94,68 @@ public sealed class MainViewModelTests
 
         Assert.Empty(vm.Databases);
         Assert.Empty(vm.Tabs);
+    }
+
+    [Fact]
+    public async Task Failed_connect_does_not_leave_a_dead_session()
+    {
+        using var db = new TempSqliteDatabase();
+        var vm = CreateViewModelWithExplorer(
+            SqliteProfile(db),
+            new GatedMetadataExplorer { DatabasesFailure = new InvalidOperationException("库清单不可用") });
+
+        await vm.InitializeAsync();
+        await vm.OpenConnectionAsync();
+
+        // 失败后必须回到"未连接"：否则 IsConnected / 连接名会谎报已连接，
+        // 而后续每个查询都报错（且那个会话再没人处置）。
+        Assert.False(vm.IsConnected);
+        Assert.Equal("未连接", vm.ActiveConnectionName);
+        Assert.Equal("库清单不可用", vm.Status);
+        Assert.Empty(vm.Databases);
+    }
+
+    [Fact]
+    public async Task Concurrent_connect_is_rejected_instead_of_stacking()
+    {
+        using var db = new TempSqliteDatabase();
+        var explorer = new GatedMetadataExplorer();
+        var vm = CreateViewModelWithExplorer(SqliteProfile(db), explorer);
+        await vm.InitializeAsync();
+
+        var first = vm.OpenConnectionAsync();
+
+        // 第一次已卡在库清单查询上：此时再连必须被守卫挡下，而不是叠加执行。
+        Assert.Equal(1, explorer.DatabaseQueryCount);
+        var second = vm.OpenConnectionAsync();
+        Assert.Contains("正在连接", vm.Status);
+
+        explorer.ReleaseDatabases();
+        await Task.WhenAll(first, second);
+
+        Assert.Equal(1, explorer.DatabaseQueryCount);
+        Assert.True(vm.IsConnected);
+        Assert.Contains("main", vm.Databases.Select(d => d.Name));
+    }
+
+    [Fact]
+    public async Task Failed_load_disables_persistence_instead_of_overwriting_the_file()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new StubConnectionStore { LoadFailure = new IOException("读取失败") };
+        var vm = CreateViewModelWithStore(SqliteProfile(db), new StubConnectionStoreFactory(store));
+
+        await vm.InitializeAsync();
+
+        Assert.Equal(0, store.SaveCount);
+        Assert.Equal("读取失败", vm.Status);
+        Assert.Contains("本次会话不会持久化连接", vm.SecurityWarning);
+
+        // 读取失败后仍能新建连接（只落在内存里），但绝不能再把空/残缺清单写回文件
+        await vm.OpenConnectionAsync();
+
+        Assert.Single(vm.SavedConnections);
+        Assert.Equal(0, store.SaveCount);
     }
 
     [Fact]
@@ -232,6 +307,52 @@ public sealed class MainViewModelTests
         await withDb.OpenConnectionAsync();
 
         Assert.Contains("main", withDb.Databases.Select(d => d.Name));
+    }
+
+    [Fact]
+    public async Task Store_probe_and_load_do_not_run_on_the_calling_thread()
+    {
+        using var db = new TempSqliteDatabase();
+        var factory = new ThreadRecordingConnectionStoreFactory();
+        var vm = CreateViewModel(db, factory);
+
+        var callerThreadId = 0;
+        var createThreadId = 0;
+        var loadThreadId = 0;
+        var saveThreadId = 0;
+        Exception? failure = null;
+
+        // 自建线程冒充 UI 线程：它不属于线程池，故 Task.Run 里的存储探测必然落在别的线程上（确定性）
+        var caller = new Thread(() =>
+        {
+            try
+            {
+                callerThreadId = Environment.CurrentManagedThreadId;
+                vm.InitializeAsync().GetAwaiter().GetResult();
+                createThreadId = factory.CreateThreadId;
+                loadThreadId = factory.LoadThreadId;
+
+                vm.OpenConnectionAsync().GetAwaiter().GetResult();
+                saveThreadId = factory.SaveThreadId;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+
+        caller.Start();
+        Assert.True(caller.Join(TimeSpan.FromSeconds(30)), "InitializeAsync 未在 30 秒内完成");
+
+        Assert.Null(failure);
+        Assert.NotEqual(0, callerThreadId);
+        Assert.NotEqual(0, createThreadId);
+        Assert.NotEqual(0, loadThreadId);
+        Assert.NotEqual(0, saveThreadId);
+        Assert.NotEqual(callerThreadId, createThreadId);
+        Assert.NotEqual(callerThreadId, loadThreadId);
+        Assert.NotEqual(callerThreadId, saveThreadId);
+        await Task.CompletedTask;
     }
 
     [Fact]
@@ -541,6 +662,25 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task Theme_load_failure_does_not_break_startup()
+    {
+        // 回归：读取界面偏好失败绝不能穿透 InitializeAsync ——
+        // 壳层是在 window.Opened 的 async void 处理器里调它的（App.axaml.cs），
+        // 一旦外抛就是 UI 线程未处理异常、应用启动即崩。
+        var themeStore = new StubThemePreferenceStore { LoadFailure = new IOException("偏好文件被占用") };
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()), themeStore);
+
+        await vm.InitializeAsync();
+
+        Assert.Equal(ThemeMode.System, vm.SelectedThemeMode);
+        Assert.Contains("界面偏好", vm.Status);
+        Assert.Equal(ThemeMode.System, themeStore.Mode);
+    }
+
+    [Fact]
     public async Task Theme_preference_store_defaults_to_system_and_round_trips()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ddb-theme-{Guid.NewGuid():N}", "ui-settings.json");
@@ -549,6 +689,25 @@ public sealed class MainViewModelTests
         Assert.Equal(ThemeMode.System, await store.LoadAsync());
         await store.SaveAsync(ThemeMode.Dark);
         Assert.Equal(ThemeMode.Dark, await store.LoadAsync());
+
+        Directory.Delete(Path.GetDirectoryName(path)!, recursive: true);
+    }
+
+    [Fact]
+    public async Task Theme_preference_store_falls_back_when_the_file_cannot_be_read()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ddb-theme-{Guid.NewGuid():N}", "ui-settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, """{"Theme":"Dark"}""");
+
+        // 回归：文件被独占占用（IOException）时必须回退"跟随系统"，
+        // 不能让异常逃到 App.axaml / MainViewModel 的启动路径。
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.Equal(ThemeMode.System, await new ThemePreferenceStore(path).LoadAsync());
+        }
+
+        Assert.Equal(ThemeMode.Dark, await new ThemePreferenceStore(path).LoadAsync());
 
         Directory.Delete(Path.GetDirectoryName(path)!, recursive: true);
     }

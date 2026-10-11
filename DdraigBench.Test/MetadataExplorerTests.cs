@@ -186,6 +186,25 @@ public sealed class MetadataExplorerTests
         Assert.Null(await explorer.GetDdlAsync(session, "main", "nope", TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Catalog_list_truncation_is_reported_instead_of_silently_cut()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        await using var session = CreateSession(db, factory);
+
+        // 造出比 MaxRows 多一行的清单：截断必须抛错，而不是把半截清单当成"库里就这些对象"
+        var sql =
+            $"SELECT 'trigger_' || value AS name FROM (WITH RECURSIVE c(value) AS "
+            + $"(SELECT 1 UNION ALL SELECT value + 1 FROM c WHERE value < {CatalogQueryExecutor.MaxRows + 1}) "
+            + "SELECT value FROM c)";
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CatalogQueryExecutor.ReadObjectsAsync(session, sql, TestContext.Current.CancellationToken));
+
+        Assert.Contains($"超过 {CatalogQueryExecutor.MaxRows} 上限", error.Message, StringComparison.Ordinal);
+    }
+
     private static DbSession CreateSession(TempSqliteDatabase db, FreeSqlFactory factory)
     {
         var session = new DbSession(

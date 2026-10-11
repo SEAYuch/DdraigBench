@@ -73,7 +73,7 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
 
     public ICommand CancelCommand { get; }
 
-public ICommand NextPageCommand { get; }
+    public ICommand NextPageCommand { get; }
 
     public ICommand PreviousPageCommand { get; }
 
@@ -126,10 +126,17 @@ public ICommand NextPageCommand { get; }
         {
             this.RaiseAndSetIfChanged(ref _isExecuting, value);
             this.RaisePropertyChanged(nameof(CanCancel));
+            this.RaisePropertyChanged(nameof(CanRun));
         }
     }
 
     public bool CanCancel => IsExecuting;
+
+    /// <summary>
+    /// 能否发起一次执行。<b>执行中必须为 false</b>：并行两次执行会让后者覆盖 <c>_cts</c>，
+    /// 先结束者的 finally 会 dispose 掉正在被使用的那把 CTS（取消串台 / ObjectDisposedException）。
+    /// </summary>
+    public bool CanRun => IsQueryEditor && !IsExecuting;
 
     /// <summary>有列有行才可导出（M4-2）。</summary>
     public bool CanExport => Columns.Count > 0 && Rows.Count > 0;
@@ -225,6 +232,13 @@ public ICommand NextPageCommand { get; }
 
     private async Task RunAsync()
     {
+        // 重入守卫（最后一道防线，UI 侧由 CanRun/IsEnabled 挡住）：执行中再进来会覆盖 _cts，
+        // 两次执行的状态与取消互相串台；直接忽略重入请求，不改变任何状态。
+        if (IsExecuting)
+        {
+            return;
+        }
+
         var session = _sessionProvider();
         if (session is null)
         {
@@ -327,14 +341,31 @@ public ICommand NextPageCommand { get; }
 
         try
         {
-            _lease = await session.LeaseRawAsync();
-            var connection = _lease.Connection;
-            if (connection.State != ConnectionState.Open)
+            // 租约获取 / 开连接 / 开事务在多数驱动里是同步实现（SQLite 尤甚），必须离开 UI 线程（AGENTS §5）；
+            // 事务对象本身无线程亲和性，后续查询照旧在事务连接上跑。
+            var (lease, transaction) = await Task.Run(async () =>
             {
-                await connection.OpenAsync();
-            }
+                var acquired = await session.LeaseRawAsync().ConfigureAwait(false);
+                try
+                {
+                    var connection = acquired.Connection;
+                    if (connection.State != ConnectionState.Open)
+                    {
+                        await connection.OpenAsync().ConfigureAwait(false);
+                    }
 
-            _transaction = await connection.BeginTransactionAsync();
+                    return (Lease: acquired, Transaction: await connection.BeginTransactionAsync().ConfigureAwait(false));
+                }
+                catch
+                {
+                    // 中途失败必须归还租约，否则连接池泄漏
+                    acquired.Dispose();
+                    throw;
+                }
+            });
+
+            _lease = lease;
+            _transaction = transaction;
             this.RaisePropertyChanged(nameof(HasTransaction));
             Status = "事务已开始";
         }
@@ -415,18 +446,38 @@ public ICommand NextPageCommand { get; }
             return;
         }
 
+        // 先摘字段再干活：提交/回滚期间不会再被当成"有事务"，避免二次提交；
+        // 下面即便抛异常也不会留下已死的事务把后续执行钉在旧连接上。
+        var transaction = _transaction;
+        var lease = _lease;
+        _transaction = null;
+        _lease = null;
+
         try
         {
-            if (commit)
+            // 提交/回滚/归还租约同为同步实现，须离开 UI 线程（AGENTS §5）。
+            // Dispose 与租约归还在同一个 finally 里：Dispose 失败也必须还连接（原先会漏还）。
+            await Task.Run(async () =>
             {
-                await _transaction.CommitAsync();
-                Status = "事务已提交";
-            }
-            else
-            {
-                await _transaction.RollbackAsync();
-                Status = "事务已回滚";
-            }
+                try
+                {
+                    if (commit)
+                    {
+                        await transaction.CommitAsync().ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await transaction.RollbackAsync().ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    await transaction.DisposeAsync().ConfigureAwait(false);
+                    lease?.Dispose();
+                }
+            });
+
+            Status = commit ? "事务已提交" : "事务已回滚";
         }
         catch (Exception ex)
         {
@@ -434,10 +485,6 @@ public ICommand NextPageCommand { get; }
         }
         finally
         {
-            await _transaction.DisposeAsync();
-            _transaction = null;
-            _lease?.Dispose();
-            _lease = null;
             this.RaisePropertyChanged(nameof(HasTransaction));
         }
     }

@@ -88,10 +88,51 @@ public sealed class DdlGeneratorTests
         var ddl = Sqlite.CreateTable(table);
 
         Assert.StartsWith("-- 子表\nCREATE TABLE \"main\".\"child\" (\n", ddl);
-        Assert.Contains("\"qty\" INTEGER NOT NULL DEFAULT 0 -- 数量", ddl);
-        Assert.Contains("CONSTRAINT \"FK_child_pid\" FOREIGN KEY (\"pid\") REFERENCES \"parent\" (\"pid\")", ddl);
+        // 逗号必须在列注释之前：写反了会让注释吞掉逗号**以及后面的 FK 行**（H4）
+        Assert.Contains("\"qty\" INTEGER NOT NULL DEFAULT 0, -- 数量", ddl);
+        // 行首锚定：不带 \n 的话，被注释吞掉的 FK 行也会"包含"这段文字而蒙混过关
+        Assert.Contains("\n  CONSTRAINT \"FK_child_pid\" FOREIGN KEY (\"pid\") REFERENCES \"parent\" (\"pid\")", ddl);
         Assert.Contains("CREATE UNIQUE INDEX \"ix_child_qty\" ON \"main\".\"child\" (\"qty\" DESC);", ddl);
         Assert.DoesNotContain("sqlite_autoindex", ddl);
+    }
+
+    [Fact]
+    public void Comment_on_a_non_last_column_does_not_swallow_the_comma()
+    {
+        var table = new DbTableInfo { Name = "t3" };
+        table.Columns.Add(Column("id", "INTEGER", isPrimary: true, isNullable: false, isIdentity: true));
+        table.Columns.Add(Column("name", "TEXT", isNullable: false, comment: "用户名"));
+        table.Columns.Add(Column("qty", "INTEGER", isNullable: false, defaultValue: "0", comment: "数量"));
+
+        Assert.Equal(
+            "CREATE TABLE \"t3\" (\n"
+            + "  \"id\" INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            + "  \"name\" TEXT NOT NULL, -- 用户名\n"
+            + "  \"qty\" INTEGER NOT NULL DEFAULT 0 -- 数量\n"
+            + ");\n",
+            Sqlite.CreateTable(table));
+    }
+
+    [Fact]
+    public async Task Commented_columns_still_produce_executable_ddl()
+    {
+        var table = new DbTableInfo { Name = "commented", Comment = "带注释的表" };
+        table.Columns.Add(Column("id", "INTEGER", isPrimary: true, isNullable: false, isIdentity: true));
+        table.Columns.Add(Column("name", "TEXT", isNullable: false, comment: "用户名"));
+        table.Columns.Add(Column("qty", "INTEGER", isNullable: false, defaultValue: "0", comment: "数量"));
+
+        var ddl = Sqlite.CreateTable(table);
+
+        using var db = new TempSqliteDatabase();
+        using var fsql = db.CreateFsql();
+
+        // H4：注释写在逗号之前时，行注释会吞掉逗号 → 这里会抛 SQLite 语法错误
+        fsql.Ado.ExecuteNonQuery(ddl);
+
+        var created = fsql.DbFirst.GetTablesByDatabase("main").Single(t => t.Name == "commented");
+        Assert.Equal(3, created.Columns.Count);
+
+        await Task.CompletedTask;
     }
 
     [Fact]

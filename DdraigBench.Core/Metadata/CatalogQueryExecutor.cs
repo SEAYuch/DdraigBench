@@ -12,7 +12,7 @@ namespace DdraigBench.Core.Metadata;
 /// </summary>
 internal static class CatalogQueryExecutor
 {
-    /// <summary>目录对象清单的上限。真实库里触发器/例程极少超过此数；超出会导致清单被截断（不静默）。</summary>
+    /// <summary>目录对象清单的上限。真实库里触发器/例程极少超过此数；超出即报错，不静默截断。</summary>
     internal const int MaxRows = 5000;
 
     internal static async Task<IReadOnlyList<DbObjectInfo>> ReadObjectsAsync(
@@ -69,6 +69,13 @@ internal static class CatalogQueryExecutor
         if (result.Error is not null)
         {
             throw new InvalidOperationException($"目录查询失败：{result.Error}（SQL：{sql}）");
+        }
+
+        // 截断必须报出来：清单少一截而用户以为"库里就这些对象"，是最难查的一类错觉。
+        if (result.Truncated)
+        {
+            throw new InvalidOperationException(
+                $"目录对象数超过 {MaxRows} 上限，清单可能不完整（SQL：{sql}）");
         }
 
         return result;

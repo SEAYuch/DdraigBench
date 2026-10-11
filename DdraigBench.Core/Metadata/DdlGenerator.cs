@@ -36,7 +36,7 @@ public sealed class DdlGenerator(ISqlDialect dialect)
         var primaryKeys = table.Columns.Where(c => c.IsPrimary).ToList();
         var inlinePrimaryKey = primaryKeys.Count == 1 ? primaryKeys[0] : null;
 
-        var lines = new List<string>();
+        var lines = new List<(string Definition, string? Comment)>();
         foreach (var column in table.Columns)
         {
             lines.Add(ColumnLine(column, inlinePrimaryKey));
@@ -45,16 +45,16 @@ public sealed class DdlGenerator(ISqlDialect dialect)
         if (inlinePrimaryKey is null && primaryKeys.Count > 0)
         {
             var name = Dialect.QuoteIdentifier($"PK_{table.Name}");
-            lines.Add($"  CONSTRAINT {name} PRIMARY KEY ({ColumnList(primaryKeys)})");
+            lines.Add(($"  CONSTRAINT {name} PRIMARY KEY ({ColumnList(primaryKeys)})", null));
         }
 
         foreach (var (name, foreign) in table.ForeignsDict)
         {
-            lines.Add(ForeignKeyLine(name, foreign));
+            lines.Add((ForeignKeyLine(name, foreign), null));
         }
 
         sb.Append("CREATE TABLE ").Append(target).Append(" (\n")
-            .Append(string.Join(",\n", lines))
+            .Append(RenderBody(lines))
             .Append("\n);\n");
 
         foreach (var (name, index) in table.IndexesDict)
@@ -71,7 +71,40 @@ public sealed class DdlGenerator(ISqlDialect dialect)
         return sb.ToString();
     }
 
-    private string ColumnLine(FsColumn column, FsColumn? inlinePrimaryKey)
+    /// <summary>
+    /// 拼装列/约束清单。**逗号必须写在注释之前**：`-- ` 是行注释，会一直吃到行尾，
+    /// 若先写注释再补逗号，逗号会被吞掉 → 任何"非最后一列带列注释"的 CREATE TABLE 都是语法错误。
+    /// 故逐行按「定义 → 逗号 → 注释 → 换行」的顺序输出（最后一列不带逗号、不带尾换行）。
+    /// </summary>
+    private static string RenderBody(IReadOnlyList<(string Definition, string? Comment)> lines)
+    {
+        var sb = new StringBuilder();
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var (definition, comment) = lines[i];
+            var separator = i < lines.Count - 1;
+
+            sb.Append(definition);
+            if (separator)
+            {
+                sb.Append(',');
+            }
+
+            if (comment is not null)
+            {
+                sb.Append(" -- ").Append(comment);
+            }
+
+            if (separator)
+            {
+                sb.Append('\n');
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private (string Definition, string? Comment) ColumnLine(FsColumn column, FsColumn? inlinePrimaryKey)
     {
         if (ReferenceEquals(column, inlinePrimaryKey) && column.IsIdentity)
         {
@@ -136,21 +169,17 @@ public sealed class DdlGenerator(ISqlDialect dialect)
         return sb.ToString();
     }
 
-    private string AppendTail(string definition, FsColumn column)
+    /// <summary>
+    /// 追加列尾的 DEFAULT 与列注释。注释**不**直接拼进定义串——由 <see cref="RenderBody"/>
+    /// 负责放在逗号之后，否则行注释会吞掉逗号（见 H4）。
+    /// </summary>
+    private static (string Definition, string? Comment) AppendTail(string definition, FsColumn column)
     {
-        var sb = new StringBuilder(definition);
+        var withDefault = string.IsNullOrWhiteSpace(column.DefaultValue)
+            ? definition
+            : definition + " DEFAULT " + column.DefaultValue;
 
-        if (!string.IsNullOrWhiteSpace(column.DefaultValue))
-        {
-            sb.Append(" DEFAULT ").Append(column.DefaultValue);
-        }
-
-        if (!string.IsNullOrWhiteSpace(column.Comment))
-        {
-            sb.Append(" -- ").Append(column.Comment);
-        }
-
-        return sb.ToString();
+        return (withDefault, string.IsNullOrWhiteSpace(column.Comment) ? null : column.Comment);
     }
 
     private string ColumnList(IEnumerable<FsColumn> columns) =>

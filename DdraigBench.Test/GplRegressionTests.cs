@@ -62,9 +62,9 @@ public sealed class GplRegressionTests
     }
 
     [Fact]
-    public void MySql_and_Sqlite_data_types_are_registered()
+    public void MySql_and_PostgreSql_data_types_are_registered()
     {
-        // 两个方言都能建出 IFreeSql（不连接），证明 Provider 已随程序集注册
+        // 两个方言都能建出 IFreeSql（不连接），证明 Provider 已随程序集注册（SQLite 由 SqliteSmokeTests 覆盖）
         using var mysql = new FreeSqlBuilder()
             .UseConnectionString(DataType.MySql, "Server=127.0.0.1;Port=1;Database=none;Uid=none;Pwd=none")
             .Build();

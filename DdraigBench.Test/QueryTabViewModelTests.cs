@@ -75,6 +75,50 @@ public sealed class QueryTabViewModelTests
     }
 
     [Fact]
+    public void CanRun_is_false_for_a_data_browser_tab()
+    {
+        var browser = new QueryTabViewModel(
+            "data", () => null, new StubFilePicker(), new StubExportDialog(),
+            browserObjectKey: "main.t", browserObjectName: "t");
+        var query = new QueryTabViewModel("q", () => null, new StubFilePicker(), new StubExportDialog());
+
+        Assert.False(browser.CanRun);
+        Assert.True(query.CanRun);
+    }
+
+    [Fact]
+    public async Task Second_execute_while_running_is_ignored()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        tab.Sql = "SELECT length(hex(zeroblob(10000000))) AS n";
+
+        // 第一条语句刻意慢（几十毫秒）：留出稳定的"执行中"窗口，让第二次调用必落在窗口内。
+        var first = tab.ExecuteAsync();
+
+        // 立刻发起第二次执行：必须被重入守卫挡下。若挡不住，第二次会覆盖 _cts
+        // （先结束者的 finally 会 dispose 掉第一次正在用的 CTS，甚至 NRE），
+        // 并用第二条语句的结果覆盖网格。
+        tab.Sql = "SELECT 1 AS marker UNION ALL SELECT 2";
+        var second = tab.ExecuteAsync();
+
+        Assert.True(tab.IsExecuting);
+        Assert.False(tab.CanRun);
+        Assert.True(tab.CanCancel);
+
+        await Task.WhenAll(first, second);
+
+        Assert.False(tab.IsExecuting);
+        Assert.True(tab.CanRun);
+        Assert.Equal(new[] { "n" }, tab.Columns);
+        Assert.Single(tab.Rows);
+        Assert.Contains("1 行", tab.Status);
+    }
+
+    [Fact]
     public async Task Without_toggle_no_transaction_is_opened()
     {
         using var db = new TempSqliteDatabase();

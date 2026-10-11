@@ -91,8 +91,13 @@ public sealed class QueryRunner
             {
                 affected = Math.Max(reader.RecordsAffected, 0);
             }
+
+            // 取消必须走 OperationCanceledException（而不是 error 文案）：调用方要能区分
+            // "用户取消"与"SQL 出错"。驱动若没理会 token（SQLite 的 async 实为同步实现），
+            // 此处兜底把已取消的 token 显式抛出，避免把半截结果当成正常结果返回（M10）。
+            ct.ThrowIfCancellationRequested();
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             error = ex.Message;
         }

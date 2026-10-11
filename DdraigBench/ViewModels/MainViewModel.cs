@@ -25,6 +25,7 @@ public sealed class MainViewModel : ViewModelBase
     private readonly Func<ThemeMode, Task>? _applyTheme;
     private IConnectionStore? _store;
     private DbSession? _session;
+    private bool _isConnecting;
     private QueryTabViewModel? _selectedTab;
     private ConnectionTreeNodeViewModel? _selectedNode;
     private ConnectionProfile? _selectedSavedConnection;
@@ -277,25 +278,22 @@ public sealed class MainViewModel : ViewModelBase
     /// </summary>
     public async Task InitializeAsync()
     {
-        if (_themePreferenceStore is not null)
-        {
-            _selectedThemeMode = await _themePreferenceStore.LoadAsync();
-            this.RaisePropertyChanged(nameof(SelectedThemeMode));
-            this.RaisePropertyChanged(nameof(SelectedThemeName));
-            if (_applyTheme is not null)
-            {
-                await _applyTheme(SelectedThemeMode);
-            }
-        }
-
         try
         {
-            _store = await _storeFactory.CreateAsync();
-            ProtectorName = _store.Protector.Name;
-            SecretsEncrypted = _store.Protector.IsEncrypted;
+            // 密钥库探测与连接串解密都可能**同步阻塞**（macOS 的 SecItem* 是同步 P/Invoke，
+            // 钥匙串被锁时还会等授权框）→ 一律离开 UI 线程（AGENTS §5）。
+            var (store, loaded) = await Task.Run(async () =>
+            {
+                var created = await _storeFactory.CreateAsync();
+                return (Created: created, Profiles: await created.LoadAsync());
+            });
+
+            _store = store;
+            ProtectorName = store.Protector.Name;
+            SecretsEncrypted = store.Protector.IsEncrypted;
 
             SavedConnections.Clear();
-            foreach (var profile in await _store.LoadAsync())
+            foreach (var profile in loaded)
             {
                 Upsert(profile);
             }
@@ -310,8 +308,49 @@ public sealed class MainViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            // 读取失败即放弃本次会话的持久化能力：内存里的清单是空的/残缺的，
+            // 若继续持有 store，后续「新建/移除连接」的 PersistAsync 会用它覆盖
+            // connections.json，把读不出来的条目（含其密文口令）永久抹掉。
+            // 置 null 后 PersistAsync 走「连接清单不可用，本次改动不会保存」分支，
+            // 与下面的告警文案一致。
+            _store = null;
+
             SecurityWarning = $"读取已保存连接失败：{ex.Message}（本次会话不会持久化连接）";
             Status = ex.Message;
+        }
+
+        // 放在最后：偏好读取失败要在状态栏里盖过上面那句"就绪/已载入 N 个连接"（告警优先）。
+        await LoadThemePreferenceAsync();
+    }
+
+    /// <summary>
+    /// 读界面偏好并应用。<b>任何失败都不得外抛</b>：调用方是壳层 <c>window.Opened</c> 的
+    /// async void 处理器（DdraigBench/App.axaml.cs），异常会变成 UI 线程未处理异常、启动即崩；
+    /// 故此处兜底成"跟随系统 + 状态栏"（读不到偏好文件时 ThemePreferenceStore 自己已回退）。
+    /// </summary>
+    private async Task LoadThemePreferenceAsync()
+    {
+        if (_themePreferenceStore is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _selectedThemeMode = await _themePreferenceStore.LoadAsync();
+            this.RaisePropertyChanged(nameof(SelectedThemeMode));
+            this.RaisePropertyChanged(nameof(SelectedThemeName));
+            if (_applyTheme is not null)
+            {
+                await _applyTheme(SelectedThemeMode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _selectedThemeMode = ThemeMode.System;
+            this.RaisePropertyChanged(nameof(SelectedThemeMode));
+            this.RaisePropertyChanged(nameof(SelectedThemeName));
+            Status = $"读取界面偏好失败，已回退为跟随系统：{ex.Message}";
         }
     }
 
@@ -383,8 +422,31 @@ public sealed class MainViewModel : ViewModelBase
         Status = $"已移除连接：{profile.Name}";
     }
 
-    /// <summary>真正建立会话并铺开左树；失败只写状态栏并返回 false。</summary>
+    /// <summary>
+    /// 建立连接（并发守卫）。连点两个连接 / 双击两下会把两次连接叠加执行：旧标签被清两次、
+    /// 旧会话被重复处置，先建好的会话还会被后一次的 <c>_session</c> 覆盖而泄漏。
+    /// </summary>
     private async Task<bool> ConnectAsync(ConnectionProfile profile)
+    {
+        if (_isConnecting)
+        {
+            Status = "正在连接，请稍候…";
+            return false;
+        }
+
+        _isConnecting = true;
+        try
+        {
+            return await ConnectCoreAsync(profile);
+        }
+        finally
+        {
+            _isConnecting = false;
+        }
+    }
+
+    /// <summary>真正建立会话并铺开左树；失败只写状态栏并返回 false。</summary>
+    private async Task<bool> ConnectCoreAsync(ConnectionProfile profile)
     {
         // 换连接前先收掉旧标签（其未提交事务会被回滚、租约归还）
         foreach (var tab in Tabs)
@@ -424,7 +486,16 @@ public sealed class MainViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            // 失败不留死会话：_session 非 null 会让 IsConnected / 连接名显示成"已连接"，
+            // 而后续每个查询都报错，且这个会话再没人处置。收拾干净并通知 UI。
+            await _session.DisposeAsync();
+            _session = null;
+            _sessionIdentity = 0;
+
             Status = ex.Message;
+            this.RaisePropertyChanged(nameof(ActiveConnectionName));
+            this.RaisePropertyChanged(nameof(IsConnected));
+            this.RaisePropertyChanged(nameof(CanPreviewDdl));
             return false;
         }
     }
@@ -465,15 +536,20 @@ public sealed class MainViewModel : ViewModelBase
 
     private async Task PersistAsync()
     {
-        if (_store is null)
+        var store = _store;
+        if (store is null)
         {
             Status = "连接清单不可用，本次改动不会保存";
             return;
         }
 
+        // 快照必须在 UI 线程取（SavedConnections 是绑定集合），加密与落盘则离开 UI 线程：
+        // 密钥库写入同样可能是同步 P/Invoke / 弹授权框（AGENTS §5）。
+        var snapshot = SavedConnections.ToList();
+
         try
         {
-            await _store.SaveAsync(SavedConnections.ToList());
+            await Task.Run(() => store.SaveAsync(snapshot));
         }
         catch (Exception ex)
         {

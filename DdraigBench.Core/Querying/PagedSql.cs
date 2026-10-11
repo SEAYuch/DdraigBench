@@ -19,8 +19,12 @@ public static class PagedSql
     public const string PageAlias = "ddb_page";
 
     /// <summary>
-    /// 构造分页查询；<paramref name="sql"/> 不是查询语句、已自带顶层分页、或参数非法时返回 <c>null</c>。
+    /// 构造分页查询；<paramref name="sql"/> 不是查询语句、已自带顶层分页、是多语句脚本、或参数非法时返回 <c>null</c>。
     /// </summary>
+    /// <remarks>
+    /// 判定一律走 <see cref="Scan"/>（跳过字符串/引用标识符/注释）：注释里可能出现 <c>LIMIT</c> 字样，
+    /// 行注释还会吃到行尾（M1）；顶层分号意味着多语句脚本，包成派生表必然是语法错误（M2）。
+    /// </remarks>
     public static string? Build(string? sql, ISqlDialect dialect, int pageSize, long offset)
     {
         ArgumentNullException.ThrowIfNull(dialect);
@@ -30,103 +34,171 @@ public static class PagedSql
             return null;
         }
 
-        var statement = Normalize(sql);
-        if (statement.Length == 0 || !IsQuery(statement) || HasTopLevelPaging(statement))
+        var statement = (sql ?? string.Empty).Trim();
+        if (statement.Length == 0)
         {
             return null;
         }
 
-        return $"SELECT * FROM ({statement}) AS {dialect.QuoteIdentifier(PageAlias)} {dialect.BuildPaging(pageSize, offset)}";
-    }
-
-    /// <summary>去首尾空白与结尾分号（多语句脚本里常见的"SELECT …;"）。</summary>
-    private static string Normalize(string? sql)
-    {
-        var text = (sql ?? string.Empty).Trim();
-        while (text.EndsWith(';'))
+        var scan = Scan(statement);
+        if (!scan.StartsWithQuery || scan.HasTopLevelPaging || scan.MultipleStatements)
         {
-            text = text[..^1].TrimEnd();
+            return null;
         }
 
-        return text;
-    }
+        // 结尾的顶层分号（`SELECT …;`）必须去掉：分号留在派生表里是语法错误
+        var body = scan.LastTopLevelSemicolon >= 0
+            ? statement[..scan.LastTopLevelSemicolon].TrimEnd()
+            : statement;
 
-    private static bool IsQuery(string statement) =>
-        statement.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
-        || statement.StartsWith("WITH", StringComparison.OrdinalIgnoreCase);
+        while (body.EndsWith(';'))
+        {
+            body = body[..^1].TrimEnd();
+        }
+
+        // 语句以行注释结尾时要补一个换行：`-- …` 会吃到行尾，否则会把我们补的右括号一起吞掉
+        var terminator = scan.EndsInLineComment ? "\n" : string.Empty;
+
+        return $"SELECT * FROM ({body}{terminator}) AS {dialect.QuoteIdentifier(PageAlias)} {dialect.BuildPaging(pageSize, offset)}";
+    }
 
     /// <summary>
-    /// 判断语句**顶层**（括号深度 0、字符串/引用之外）是否已出现 <c>LIMIT</c>/<c>OFFSET</c>。
-    /// 只做顶层判断是为了不误伤子查询里的 LIMIT，也不被字面量里的 "limit" 字样带偏。
+    /// 单遍扫描语句：跳过字符串/引用标识符/注释，得出首词是否为查询、顶层是否已有分页、
+    /// 是否为多语句脚本、最后一个顶层分号的位置，以及语句是否以行注释结尾。
     /// </summary>
-    private static bool HasTopLevelPaging(string statement)
+    /// <remarks>
+    /// 未处理 MySQL 的 <c>#</c> 注释：SQLite/PG 里 <c>#</c> 是普通字符（PG 还当运算符），
+    /// 按注释处理反而更危险；代价只是 MySQL 用 <c>#</c> 写注释时可能少翻一页。
+    /// </remarks>
+    private static ScanResult Scan(string statement)
     {
         var depth = 0;
-        var inString = false;
-        var inQuotedIdentifier = false;
+        var index = 0;
+        var firstWordRead = false;
+        var startsWithQuery = false;
+        var hasTopLevelPaging = false;
+        var lastSemicolon = -1;
+        var multipleStatements = false;
+        var endsInLineComment = false;
 
-        for (var i = 0; i < statement.Length; i++)
+        void NoteToken()
         {
-            var c = statement[i];
-
-            if (inString)
+            // 顶层分号之后又出现实义字符 → 多语句脚本
+            if (lastSemicolon >= 0)
             {
-                if (c == '\'')
-                {
-                    // '' 是转义的单引号，跳过两次
-                    if (i + 1 < statement.Length && statement[i + 1] == '\'')
-                    {
-                        i++;
-                    }
-                    else
-                    {
-                        inString = false;
-                    }
-                }
-
-                continue;
-            }
-
-            if (inQuotedIdentifier)
-            {
-                if (c == '"')
-                {
-                    inQuotedIdentifier = false;
-                }
-
-                continue;
-            }
-
-            switch (c)
-            {
-                case '\'':
-                    inString = true;
-                    continue;
-                case '"':
-                case '`':
-                    inQuotedIdentifier = true;
-                    continue;
-                case '(':
-                    depth++;
-                    continue;
-                case ')':
-                    depth--;
-                    continue;
-            }
-
-            if (depth != 0 || !IsWordBoundary(statement, i))
-            {
-                continue;
-            }
-
-            if (MatchesKeyword(statement, i, "LIMIT") || MatchesKeyword(statement, i, "OFFSET"))
-            {
-                return true;
+                multipleStatements = true;
             }
         }
 
-        return false;
+        while (index < statement.Length)
+        {
+            var c = statement[index];
+
+            if (char.IsWhiteSpace(c))
+            {
+                index++;
+                continue;
+            }
+
+            if (c == '-' && index + 1 < statement.Length && statement[index + 1] == '-')
+            {
+                var end = statement.IndexOf('\n', index);
+                if (end < 0)
+                {
+                    endsInLineComment = true;
+                    break;
+                }
+
+                index = end + 1;
+                continue;
+            }
+
+            if (c == '/' && index + 1 < statement.Length && statement[index + 1] == '*')
+            {
+                var end = statement.IndexOf("*/", index + 2, StringComparison.Ordinal);
+                index = end < 0 ? statement.Length : end + 2;
+                continue;
+            }
+
+            if (c is '\'' or '"' or '`')
+            {
+                firstWordRead = true;
+                index = SkipQuoted(statement, index);
+                NoteToken();
+                continue;
+            }
+
+            if (!firstWordRead)
+            {
+                firstWordRead = true;
+                startsWithQuery = MatchesKeyword(statement, index, "SELECT")
+                    || MatchesKeyword(statement, index, "WITH");
+            }
+
+            if (c == '(')
+            {
+                depth++;
+            }
+            else if (c == ')')
+            {
+                depth--;
+            }
+            else if (c == ';' && depth == 0)
+            {
+                lastSemicolon = index;
+                index++;
+                continue;
+            }
+            else if (depth == 0
+                && IsWordBoundary(statement, index)
+                && (MatchesKeyword(statement, index, "LIMIT") || MatchesKeyword(statement, index, "OFFSET")))
+            {
+                hasTopLevelPaging = true;
+            }
+
+            index++;
+            NoteToken();
+        }
+
+        return new ScanResult(startsWithQuery, hasTopLevelPaging, multipleStatements, lastSemicolon, endsInLineComment);
     }
+
+    /// <summary>跳过一个字符串/引用标识符（<c>''</c>、<c>""</c>、<c>``</c> 是转义写法），返回其后的下标。</summary>
+    private static int SkipQuoted(string statement, int index)
+    {
+        var quote = statement[index];
+        index++;
+
+        while (index < statement.Length)
+        {
+            if (statement[index] != quote)
+            {
+                index++;
+                continue;
+            }
+
+            if (index + 1 < statement.Length && statement[index + 1] == quote)
+            {
+                index += 2;
+                continue;
+            }
+
+            return index + 1;
+        }
+
+        return statement.Length;
+    }
+
+    /// <summary>
+    /// 扫描结果。<paramref name="LastTopLevelSemicolon"/> 为 <c>-1</c> 表示没有顶层分号；
+    /// <paramref name="EndsInLineComment"/> 为真表示语句以 <c>-- …</c> 行注释收尾。
+    /// </summary>
+    private readonly record struct ScanResult(
+        bool StartsWithQuery,
+        bool HasTopLevelPaging,
+        bool MultipleStatements,
+        int LastTopLevelSemicolon,
+        bool EndsInLineComment);
 
     private static bool IsWordBoundary(string statement, int index)
     {

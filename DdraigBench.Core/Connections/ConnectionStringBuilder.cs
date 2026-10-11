@@ -16,15 +16,40 @@ public static class ConnectionStringBuilder
     public static string Build(ConnectionParameters p) => p.DataType switch
     {
         DataType.Sqlite =>
-            $"Data Source={p.FilePath};Pooling=False",
+            $"Data Source={Escape(p.FilePath)};Pooling=False",
         DataType.MySql =>
-            $"Server={p.Host};Port={p.Port ?? DefaultPort(DataType.MySql)};Database={p.Database};" +
-            $"Uid={p.User};Pwd={p.Password};Pooling=false",
+            $"Server={Escape(p.Host)};Port={p.Port ?? DefaultPort(DataType.MySql)};Database={Escape(p.Database)};" +
+            $"Uid={Escape(p.User)};Pwd={Escape(p.Password)};Pooling=false",
         DataType.PostgreSQL =>
-            $"Host={p.Host};Port={p.Port ?? DefaultPort(DataType.PostgreSQL)};Database={p.Database};" +
-            $"Username={p.User};Password={p.Password};Pooling=false",
+            $"Host={Escape(p.Host)};Port={p.Port ?? DefaultPort(DataType.PostgreSQL)};Database={Escape(p.Database)};" +
+            $"Username={Escape(p.User)};Password={Escape(p.Password)};Pooling=false",
         _ => throw new NotSupportedException($"暂不支持的 Provider：{p.DataType}"),
     };
+
+    /// <summary>
+    /// 按 ADO.NET 连接串约定转义取值：含 <c>;</c>、引号或首尾空白时用单引号包裹，内部单引号翻倍。
+    /// </summary>
+    /// <remarks>
+    /// 不转义会让取值里的 <c>;</c> 被解析成"下一个键值对"——口令含分号时连接串被静默改写
+    /// （轻则连不上，重则把后半截当成别的关键字，被驱动拒绝或连到非预期目标）。
+    /// 三个驱动（System.Data.SQLite / MySqlConnector / Npgsql）都遵循这套引号与翻倍转义约定。
+    /// </remarks>
+    private static string Escape(string? value)
+    {
+        var text = value ?? string.Empty;
+        if (text.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var needsQuotes = text.IndexOf(';') >= 0
+            || text.IndexOf('\'') >= 0
+            || text.IndexOf('"') >= 0
+            || char.IsWhiteSpace(text[0])
+            || char.IsWhiteSpace(text[^1]);
+
+        return needsQuotes ? $"'{text.Replace("'", "''", StringComparison.Ordinal)}'" : text;
+    }
 
     public static string SuggestName(ConnectionParameters p) => p.DataType switch
     {

@@ -35,6 +35,11 @@ public sealed class ThemePreferenceStore : IThemePreferenceStore
         {
             return ThemeMode.System;
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 偏好文件读不到（占用/权限/路径失效）不该阻断启动：回退跟随系统。
+            return ThemeMode.System;
+        }
     }
 
     public async Task SaveAsync(ThemeMode mode, CancellationToken cancellationToken = default)

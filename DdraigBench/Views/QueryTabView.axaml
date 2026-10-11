@@ -17,7 +17,7 @@
                 <TextBlock Text="SQL 编辑器" FontWeight="SemiBold" IsVisible="{Binding IsQueryEditor}" VerticalAlignment="Center" />
             </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
-                <Button Command="{Binding ExecuteCommand}" IsVisible="{Binding IsQueryEditor}" ToolTip.Tip="F5">
+                <Button Command="{Binding ExecuteCommand}" IsVisible="{Binding IsQueryEditor}" IsEnabled="{Binding CanRun}" ToolTip.Tip="F5">
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <ic:FluentIcon Icon="Play" IconSize="Size16" />
                         <TextBlock Text="运行 F5" />

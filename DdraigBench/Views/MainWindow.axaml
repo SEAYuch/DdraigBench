@@ -69,7 +69,7 @@
                     </StackPanel>
                 </Button>
                 <Border Classes="tool-divider" />
-                <Button Classes="command-button accent" Command="{Binding ExecuteSelectedQueryCommand}" IsEnabled="{Binding SelectedTab.IsQueryEditor}" ToolTip.Tip="F5">
+                <Button Classes="command-button accent" Command="{Binding ExecuteSelectedQueryCommand}" IsEnabled="{Binding SelectedTab.CanRun}" ToolTip.Tip="F5">
                     <StackPanel Orientation="Horizontal" Spacing="7">
                         <ic:FluentIcon Icon="Play" IconVariant="Filled" IconSize="Size16" />
                         <TextBlock Text="运行" VerticalAlignment="Center" />

@@ -59,7 +59,8 @@ public sealed class ConnectionStoreTests : IDisposable
     {
         if (!OperatingSystem.IsWindows())
         {
-            return;
+            Assert.Skip("DPAPI 仅 Windows 可用");
+            return; // 供分析器识别平台守卫（CA1416），与 §7 的零告警门槛配套
         }
 
         var protector = new DpapiSecretProtector();
@@ -75,6 +76,41 @@ public sealed class ConnectionStoreTests : IDisposable
         Assert.DoesNotContain("s3cret-pw", json);
         Assert.DoesNotContain("Server=db", json);
         Assert.Contains("windows-dpapi", json);
+    }
+
+    [Fact]
+    public async Task Null_connections_array_loads_empty_instead_of_crashing()
+    {
+        // 手改/半截文件可能写成 "connections": null；反序列化会把集合置空 → 不判空即 NRE
+        await File.WriteAllTextAsync(_filePath, "{\"version\":1,\"protector\":\"plaintext\",\"connections\":null}");
+
+        var store = new ConnectionStore(_filePath, new PlainTextSecretProtector());
+
+        Assert.Empty(await store.LoadAsync());
+    }
+
+    [Fact]
+    public async Task Newer_file_version_is_rejected_instead_of_being_overwritten()
+    {
+        const string content = "{\"version\":99,\"protector\":\"plaintext\",\"connections\":[]}";
+        await File.WriteAllTextAsync(_filePath, content);
+
+        var store = new ConnectionStore(_filePath, new PlainTextSecretProtector());
+
+        var error = await Assert.ThrowsAsync<NotSupportedException>(() => store.LoadAsync());
+        Assert.Contains("99", error.Message, StringComparison.Ordinal);
+        Assert.Equal(content, await File.ReadAllTextAsync(_filePath));
+    }
+
+    [Fact]
+    public async Task Missing_version_is_treated_as_current()
+    {
+        // 旧文件（或手写文件）没有 version 字段时，按当前版本处理，不报错
+        await File.WriteAllTextAsync(_filePath, "{\"protector\":\"plaintext\",\"connections\":[]}");
+
+        var store = new ConnectionStore(_filePath, new PlainTextSecretProtector());
+
+        Assert.Empty(await store.LoadAsync());
     }
 
     [Fact]
@@ -154,6 +190,7 @@ public sealed class ConnectionStoreTests : IDisposable
     {
         if (OperatingSystem.IsWindows())
         {
+            Assert.Skip("Unix 文件权限仅 Linux/macOS/FreeBSD 有意义");
             return;
         }
 
@@ -171,6 +208,7 @@ public sealed class ConnectionStoreTests : IDisposable
         // 回归：配置路径可能落在 /tmp 等既有目录上，绝不能擅自 chmod（曾误改，非属主时 EPERM 崩溃）。
         if (OperatingSystem.IsWindows())
         {
+            Assert.Skip("Unix 目录权限仅 Linux/macOS/FreeBSD 有意义");
             return;
         }
 
@@ -198,6 +236,7 @@ public sealed class ConnectionStoreTests : IDisposable
     {
         if (OperatingSystem.IsWindows())
         {
+            Assert.Skip("Unix 目录权限仅 Linux/macOS/FreeBSD 有意义");
             return;
         }
 
