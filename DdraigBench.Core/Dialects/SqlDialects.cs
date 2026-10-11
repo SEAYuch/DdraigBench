@@ -11,6 +11,7 @@ public static class SqlDialects
         DataType.Sqlite => SqliteDialect.Instance,
         DataType.MySql => MySqlDialect.Instance,
         DataType.PostgreSQL => PostgreSqlDialect.Instance,
+        DataType.SqlServer => SqlServerDialect.Instance,
         _ => throw new NotSupportedException($"暂无该方言的实现：{dataType}"),
     };
 

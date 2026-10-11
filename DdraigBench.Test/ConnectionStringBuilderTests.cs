@@ -2,6 +2,7 @@
 
 using DdraigBench.Core.Connections;
 using FreeSql;
+using Microsoft.Data.SqlClient;
 using MySqlConnector;
 using Npgsql;
 using System.Data.SQLite;
@@ -119,10 +120,49 @@ public sealed class ConnectionStringBuilderTests
     }
 
     [Fact]
-    public void Unsupported_provider_throws()
+    public void SqlServer_uses_default_port_and_secure_tls_defaults()
     {
-        var parameters = new ConnectionParameters(DataType.SqlServer, Host: "h");
+        var parameters = new ConnectionParameters(
+            DataType.SqlServer, Host: "db.example", Database: "app", User: "sa", Password: "secret");
 
-        Assert.Throws<NotSupportedException>(() => ConnectionStringBuilder.Build(parameters));
+        var parsed = new SqlConnectionStringBuilder(ConnectionStringBuilder.Build(parameters));
+
+        Assert.Equal("db.example,1433", parsed.DataSource);
+        Assert.Equal("app", parsed.InitialCatalog);
+        Assert.Equal("sa", parsed.UserID);
+        Assert.Equal("secret", parsed.Password);
+        Assert.True(parsed.Encrypt);
+        Assert.False(parsed.TrustServerCertificate);
+        Assert.False(parsed.Pooling);
+        Assert.Equal("sa@db.example:1433/app", ConnectionStringBuilder.SuggestName(parameters));
+    }
+
+    [Fact]
+    public void SqlServer_explicit_port_and_trust_server_certificate_are_applied()
+    {
+        var parameters = new ConnectionParameters(
+            DataType.SqlServer, Host: "db.example", Port: 14330, Database: "app",
+            User: "sa", Password: "secret", TrustServerCertificate: true);
+
+        var parsed = new SqlConnectionStringBuilder(ConnectionStringBuilder.Build(parameters));
+
+        Assert.Equal("db.example,14330", parsed.DataSource);
+        Assert.True(parsed.TrustServerCertificate);
+    }
+
+    [Theory]
+    [InlineData("p;w")]
+    [InlineData("p'w\"x")]
+    [InlineData(" leading ")]
+    public void SqlServer_password_special_characters_survive_a_real_driver_parse(string password)
+    {
+        var parameters = new ConnectionParameters(
+            DataType.SqlServer, Host: "db.example", Database: "app", User: "sa", Password: password);
+
+        var parsed = new SqlConnectionStringBuilder(ConnectionStringBuilder.Build(parameters));
+
+        Assert.Equal(password, parsed.Password);
+        Assert.Equal("app", parsed.InitialCatalog);
+        Assert.Equal("sa", parsed.UserID);
     }
 }

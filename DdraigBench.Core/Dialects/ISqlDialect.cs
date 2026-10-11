@@ -7,6 +7,9 @@ public interface ISqlDialect
     /// <summary>引用标识符（表名 / 列名）。</summary>
     string QuoteIdentifier(string name);
 
+    /// <summary>该方言当前是否允许自动包裹查询进行服务端分页。</summary>
+    bool SupportsServerPaging { get; }
+
     /// <summary>生成分页子句。</summary>
     string BuildPaging(int limit, long offset);
 

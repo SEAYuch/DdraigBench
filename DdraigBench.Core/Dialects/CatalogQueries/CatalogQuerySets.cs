@@ -12,6 +12,7 @@ public static class CatalogQuerySets
         DataType.Sqlite => SqliteCatalogQueries.Instance,
         DataType.MySql => MySqlCatalogQueries.Instance,
         DataType.PostgreSQL => PostgreSqlCatalogQueries.Instance,
+        DataType.SqlServer => SqlServerCatalogQueries.Instance,
         _ => throw new NotSupportedException($"尚未接入该方言的目录查询：{dataType}"),
     };
 

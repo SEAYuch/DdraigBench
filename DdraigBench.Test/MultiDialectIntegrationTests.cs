@@ -1,6 +1,7 @@
 // DdraigBench — 多方言集成测试（靶机连接串走环境变量；未设置或不可达则跳过）
 
 using DdraigBench.Core.Connections;
+using DdraigBench.Core.Dialects;
 using DdraigBench.Core.Metadata;
 using DdraigBench.Core.Querying;
 using DdraigBench.Core.Sessions;
@@ -12,6 +13,7 @@ public sealed class MultiDialectIntegrationTests
 {
     private const string MySqlEnvVar = "DDRAIGBENCH_MYSQL";
     private const string PostgreSqlEnvVar = "DDRAIGBENCH_PG";
+    private const string SqlServerEnvVar = "DDRAIGBENCH_SQLSERVER";
 
     [Fact]
     public Task MySql_runs_select_and_reads_databases() =>
@@ -20,6 +22,10 @@ public sealed class MultiDialectIntegrationTests
     [Fact]
     public Task PostgreSql_runs_select_and_reads_databases() =>
         RunAsync(PostgreSqlEnvVar, DataType.PostgreSQL, "PostgreSQL");
+
+    [Fact]
+    public Task SqlServer_runs_select_and_reads_databases() =>
+        RunAsync(SqlServerEnvVar, DataType.SqlServer, "SQL Server");
 
     [Fact]
     public Task MySql_catalog_queries_run_against_the_target() =>
@@ -131,8 +137,35 @@ public sealed class MultiDialectIntegrationTests
         Assert.Null(result.Error);
         Assert.Equal(1, Convert.ToInt32(Assert.Single(result.Rows)[0]));
 
-        var databases = await new FreeSqlMetadataExplorer().GetDatabasesAsync(session);
+        var explorer = new FreeSqlMetadataExplorer();
+        var databases = await explorer.GetDatabasesAsync(session);
         Assert.NotEmpty(databases);
+
+        if (dataType == DataType.SqlServer)
+        {
+            var database = Convert.ToString(session.Fsql.Ado.ExecuteScalar("SELECT DB_NAME()"));
+            Assert.Contains(database!, databases);
+
+            session.Fsql.Ado.ExecuteNonQuery(
+                "IF OBJECT_ID(N'dbo.ddb_probe_table', N'U') IS NOT NULL DROP TABLE dbo.ddb_probe_table; " +
+                "CREATE TABLE dbo.ddb_probe_table (id int NOT NULL PRIMARY KEY, name nvarchar(40) NULL)");
+            try
+            {
+                var orderedSql = "SELECT id, name FROM dbo.ddb_probe_table ORDER BY id";
+                Assert.Null(PagedSql.Build(orderedSql, SqlDialects.Get(dataType), 2, 0));
+                var orderedResult = await new QueryRunner(session.Fsql).ExecuteAsync(orderedSql, maxRows: 10);
+                Assert.Null(orderedResult.Error); // 原始 ORDER BY 直通执行，SQL Server 不使用派生表自动分页
+                Assert.Equal("name", orderedResult.Columns[1]);
+
+                var ddl = await explorer.GetDdlAsync(
+                    session, database!, "ddb_probe_table", TestContext.Current.CancellationToken);
+                Assert.Contains("CREATE TABLE", ddl, StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                session.Fsql.Ado.ExecuteNonQuery("DROP TABLE dbo.ddb_probe_table");
+            }
+        }
     }
 
     private static bool IsReachable(DbSession session)

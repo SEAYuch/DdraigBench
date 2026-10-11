@@ -28,6 +28,7 @@
         <PackageReference Include="FreeSql.Provider.Sqlite" Version="3.5.311" />
         <PackageReference Include="FreeSql.Provider.MySqlConnector" Version="3.5.311" />
         <PackageReference Include="FreeSql.Provider.PostgreSQL" Version="3.5.311" />
+        <PackageReference Include="FreeSql.Provider.SqlServer" Version="3.5.311" />
         <PackageReference Include="ReactiveUI.Avalonia" Version="12.1.6" />
     </ItemGroup>
 

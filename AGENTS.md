@@ -48,10 +48,11 @@
 | **FreeSql.Provider.Sqlite** | 3.5.311 | SQLite 方言 + 驱动（M1 黄金通道）→ 钉 System.Data.SQLite.Core 1.0.119（自带原生 e_sqlite3） | ✅ MIT；主工程 / Core / 测试工程三处均引用 |
 | **FreeSql.Provider.MySqlConnector** | 3.5.311 | MySQL/MariaDB 方言 + 驱动（M2）→ 钉 MySqlConnector 2.5.0 | ✅ MIT；主/测/Core 三处均引用 |
 | **FreeSql.Provider.PostgreSQL** | 3.5.311 | PostgreSQL 方言 + 驱动（M2）→ 钉 Npgsql.LegacyPostgis / Npgsql.NetTopologySuite 5.0.18 + Newtonsoft.Json 13.0.1 | ✅ MIT；主/测/Core 三处均引用 |
+| **FreeSql.Provider.SqlServer** | 3.5.311 | SQL Server 2005+ 方言 + 驱动 → 钉 Microsoft.Data.SqlClient 5.2.2 | ✅ MIT；主/测/Core 三处均引用（M2-c，2026-10-11 靶机实测） |
 | ReactiveUI.Avalonia | 12.1.6 | MVVM 桥 → ReactiveUI 24.2.0 + Splat 21.0.0 | ✅ 保留 |
 | ~~ReactiveUI.Avalonia.Autofac~~ | ~~12.1.6~~ | Autofac 容器桥 → Splat.Autofac | ❌ **已移除**（2026-10-11，C5）：从未接线（Program/App 无任何 Autofac 配置），按 §2.4 D2 取 b 删包，DI 一律走 Splat 默认定位器 |
 
-### 2.2 Provider 引入策略（M1 装 Sqlite；M2 装 MySqlConnector + PostgreSQL；SqlServer 待靶机）
+### 2.2 Provider 引入策略（M1 SQLite；M2 MySQL / PostgreSQL / SQL Server）
 
 FreeSql 核心包不含任何驱动，连接真实数据库前必须按需引入 Provider。**按 milestone 逐个加**，当前批准清单（均为 MIT，nuspec 实查）：
 
@@ -67,7 +68,7 @@ FreeSql 核心包不含任何驱动，连接真实数据库前必须按需引入
 
 **红线**：`Provider.MySql` 与 `Provider.MySqlConnector` 注册同一个 `DataType.MySql`，**不得同时安装**；仓库任何位置出现 `FreeSql.All` / `Provider.MySql` / `MySql.Data` 即视为事故。
 
-**SqlServer 明确挂起**（2026-09-18）：当前无 SQL Server 靶机 → 暂不装 `FreeSql.Provider.SqlServer`、也不放进连接对话框，避免未实测的方言代码入库；等有靶机再按上表加入（§8）。
+**SQL Server 已接入（2026-10-11）**：`FreeSql.Provider.SqlServer` 3.5.311 已在 Core/主/测试工程引用；连接对话框提供 SQL Server（默认 Encrypt=True、TrustServerCertificate=False，需自签证书时用户显式勾选信任）。已用 SQL Server 2022 Developer 靶机实测连通、SELECT、当前库清单及表元数据/DDL。未实现目录对象/原始定义；自动服务端分页暂禁用（避免 T-SQL 派生表内裸 ORDER BY 语法/语义问题），详见 §8 M2-c 与 README 限制。
 
 ### 2.3 Provider → 驱动钉版表（选型前先看）
 
@@ -243,11 +244,11 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 │   │   └── ResultExporter.cs         # CSV / INSERT 脚本渲染（M4-2，纯逻辑；与 Querying 平级，不在其下）
 │   └── Dialects/
 │       ├── ISqlDialect.cs / SqlDialectBase.cs   # 方言钩子：标识符引用 / 分页 / 字面量渲染（M4-1）
-│       ├── SqliteDialect.cs / MySqlDialect.cs / PostgreSqlDialect.cs
+│       ├── SqliteDialect.cs / MySqlDialect.cs / PostgreSqlDialect.cs / SqlServerDialect.cs
 │       ├── SqlDialects.cs            # DataType → ISqlDialect 工厂
 │       └── CatalogQueries/           # ★ IDbFirst 缺口的补齐 SQL（M5-1）：每库一组，只造 SQL 不执行
 │           ├── ICatalogQueries.cs    # 能力矩阵 + 对象清单/视图定义/表定义 SQL（列名契约见类注释）
-│           ├── SqliteCatalogQueries.cs / MySqlCatalogQueries.cs / PostgreSqlCatalogQueries.cs
+│           ├── SqliteCatalogQueries.cs / MySqlCatalogQueries.cs / PostgreSqlCatalogQueries.cs / SqlServerCatalogQueries.cs
 │           └── CatalogQuerySets.cs   # DataType → ICatalogQueries 工厂（与 SqlDialects 同构）
 └── DdraigBench.Test/            # Core 的全部单测/集成测（SQLite 黄金通道）
 ```
@@ -264,8 +265,8 @@ global.json                     # test.runner = Microsoft.Testing.Platform（见
 // 元数据：左侧树的唯一数据源。任何树节点懒加载都走它。
 public interface IMetadataExplorer
 {
-    // 可浏览的「库」。SQLite/MySQL 走 IDbFirst.GetDatabases()；PostgreSQL 收窄为当前库
-    //   （一个连接只能看到所连库，见 §4 实测 / M5-2）。
+    // 可浏览的「库」。SQLite/MySQL 走 IDbFirst.GetDatabases()；PostgreSQL / SQL Server 收窄为当前库
+    //   （连接只能浏览所连库；SQL Server 的 IDbFirst.GetDatabases() 实测为空，改用 SELECT DB_NAME()）。
     Task<IReadOnlyList<string>> GetDatabasesAsync(DbSession s, CancellationToken ct = default);
     // Table/View ← IDbFirst；Schema/Trigger/StoredProcedure/Function ← 目录查询（M5-1 / M5-2）：
     //   方言没有这类对象时返回「空集」而非报错（如 SQLite 的 Schema/存储过程）；
@@ -277,9 +278,9 @@ public interface IMetadataExplorer
     Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(DbSession s, string database, string table,
         CancellationToken ct = default);
     // M4-3 追加、M5-1 改优先级：DDL 预览。**原始定义 > 按元数据重建**——
-    //   表：方言能给出原始建表语句就用它（当前仅 SQLite），否则回落 DdlGenerator；
+    //   表：方言能给出原始建表语句就用它（当前 SQLite），否则回落 DdlGenerator（SQL Server 也走此重建）；
     //   视图：目录查询取真实定义（SQLite/MySQL/PG 三方均可），取不到才回落占位；
-    //   触发器/函数/存储过程：按名在目录里找，拿得到 definition 就给，否则 null。对象不存在返回 null。
+    //   触发器/函数/存储过程：按名在目录里找，拿得到 definition 就给，否则 null；SQL Server 暂未实现目录对象定义。对象不存在返回 null。
     Task<string?> GetDdlAsync(DbSession s, string database, string table, CancellationToken ct = default);
 }
 
@@ -366,7 +367,7 @@ public sealed class DbSession : IAsyncDisposable
 - 工作台借鉴 Navicat 的连接 Navigator / 对象树 / 标签工作区交互，但视觉继续使用 FluentAvalonia + FluentIcons，不增加第二套主题或图标包；密集工具栏、导航器与工作区之间应有清晰边界，可通过 splitter 调整导航器宽度并收起。
 - 应用外观支持「跟随系统 / 浅色 / 深色」；默认跟随操作系统。选择持久化到 LocalApplicationData 下单独的 `ui-settings.json`，工作台自定义面板/边框/文字/状态色必须使用跟随 `RequestedThemeVariant` 更新的语义资源，禁止硬编码单一主题表面色。
 - **连接 UX 仍为单活动连接**：左侧保存连接清单双击激活；切换连接会关闭旧会话及其所有标签，不暗示多个连接并行存在。
-- 对象树层级：SQLite/MySQL「库 → 非空对象类型组 → 对象 → 列」；PostgreSQL「库 → 模式 → 非空对象类型组 → 对象 → 列」。类型组是壳层展示节点（`Kind=null`、`GroupLabel` 有值），不是 `DbObjectKind` 对象；DDL/浏览命令必须以真实对象节点的 Kind 判定。
+- 对象树层级：SQLite/MySQL「库 → 非空对象类型组 → 对象 → 列」；PostgreSQL「当前库 → 模式 → 非空对象类型组 → 对象 → 列」；SQL Server「当前库 → 非空对象类型组 → 对象 → 列」。类型组是壳层展示节点（`Kind=null`、`GroupLabel` 有值），不是 `DbObjectKind` 对象；DDL/浏览命令必须以真实对象节点的 Kind 判定。
 - 对象树筛选只检查**已加载节点**，不查询数据库、不展开惰性节点；过滤时保留含匹配后代的祖先，清空筛选恢复已加载树。
 - 表/视图双击或上下文命令打开只读分页数据标签，使用 dialect 分别引用容器与对象标识符；表有主键元数据时以主键作为稳定默认排序，否则依赖数据库返回顺序。相同活动连接/容器/类型/对象复用原标签且保留页码。不做行编辑、插入、删除或筛选；结果网格**表头点击可排序，但只排当前页已读回的行**（服务端分页下手里没有整表，跨页排序须把 `ORDER BY` 下推服务端，见 §8 第三批），列类型由已读回的值推断（数字/日期右对齐）。连接切换照旧处置全部标签。
 - 查询标签编辑器/结果网格上下可拖动分割；数据浏览标签隐藏编辑器，只呈现只读网格与分页。快捷键：`Ctrl+N` 新建查询、`F5` 执行选中查询标签、`Esc` 取消正在执行的查询、`Ctrl+R` 刷新数据浏览标签并回到第一页（查询标签不受 Ctrl+R 影响）。
@@ -390,7 +391,7 @@ public sealed class DbSession : IAsyncDisposable
    - ✅ **触发器 / 函数 / 存储过程清单**：三方方言均可列；SQLite 的触发器还能直接给出完整定义。
    - ✅ **模式层（M5-2）**：`DbObjectKind.Schema` + PG 的 `pg_namespace` 清单；树变成「库 → 模式 → 对象」，SQLite/MySQL 保持「库 → 对象」。PG 的库清单同时收窄为当前库。
    - ⏳ **仍缺**（后续）：事件（MySQL `information_schema.EVENTS`）与分区（`information_schema.PARTITIONS`）；MySQL/PG 的**触发器与例程定义**（需 `SHOW CREATE TRIGGER` / `pg_get_functiondef`，或按 `information_schema.TRIGGERS`/`PARAMETERS` 逐列拼装）；MySQL 的表定义（只能走 `SHOW CREATE TABLE`，多列且列名不固定，未纳入契约）；PG 物化视图（`relkind='m'`）。
-4. 树节点惰性加载：展开才查子级。当前壳层展示层级：SQLite/MySQL = 「库 → 非空对象类型组 → 对象 → 列」，PostgreSQL = 「库 → 模式 → 非空对象类型组 → 对象 → 列」。类型组只是壳层节点，不属于 `DbObjectKind`；Core 元数据契约仍按容器取对象。
+4. 树节点惰性加载：展开才查子级。当前壳层展示层级：SQLite/MySQL = 「库 → 非空对象类型组 → 对象 → 列」，PostgreSQL = 「当前库 → 模式 → 非空对象类型组 → 对象 → 列」，SQL Server = 「当前库 → 非空对象类型组 → 对象 → 列」。类型组只是壳层节点，不属于 `DbObjectKind`；Core 元数据契约仍按容器取对象。
 
 ---
 
@@ -411,7 +412,7 @@ public sealed class DbSession : IAsyncDisposable
 |---|---|
 | Core.Services | xunit 单测；DB 依赖用 **SQLite 临时文件**（`Path.GetTempFileName` 建库），不 mock IFreeSql（集成式更真） |
 | GPL 防回归 | 静态断言 + **驱动集真测试**（`GplRegressionTests.cs`）。覆盖边界（勿夸大）：`No_forbidden_package_references_in_any_csproj` 扫**全仓** `*.csproj`（排除 `bin`/`obj`）；`No_forbidden_assemblies_in_test_output` 只查**测试工程输出目录**（`AppContext.BaseDirectory`），壳/Core 的 `bin` 未查；`CanLoadAssembly` 断言 `MySqlConnector`/`Npgsql` 可加载、`MySql.Data`/`FreeSql.Provider.MySql` 加载失败；`MySql_and_PostgreSql_data_types_are_registered` 只建 MySQL/PG 两个 `IFreeSql`（SQLite 注册由 `SqliteSmokeTests` 覆盖） |
-| 多方言集成 | 靶机连接串走环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`；未设置或 `Ado.ExecuteConnectTest()` 不可达即 `Assert.Skip`（无靶机时全绿）。**凭据不进仓库**（`MultiDialectIntegrationTests.cs`）。M5-1 起另跑一组**目录查询靶机测**：清单 SQL 必须跑得通（允许空集、不允许报错），并建一个探测视图验证视图定义、结束即删；容器名由 `SELECT DATABASE()` / `SELECT current_schema()` 现取（不喂 `GetDatabasesAsync()` 的首项，原因见 §4 的 PG 不一致） |
+| 多方言集成 | 靶机连接串走环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG` / `DDRAIGBENCH_SQLSERVER`；未设置或 `Ado.ExecuteConnectTest()` 不可达即 `Assert.Skip`（无靶机时全绿）。**凭据不进仓库**（`MultiDialectIntegrationTests.cs`）。MySQL/PG 跑目录查询与视图定义靶测；SQL Server 跑 SELECT、当前库清单、表元数据/DDL 重建与有序查询（验证 `PagedSql` 不改写 SQL）。SQL Server 的目录对象、原始定义和自动服务端分页当前不支持 |
 | 目录查询（纯逻辑） | `CatalogQueryTests`：方言路由、能力矩阵（含 `Schema`）、SQL 形状（目标系统表/收窄条件）、限定名与**转义**（SQLite `''`、MySQL `\\`+`` `` ``、PG 双引号）、单库绑定标志——**不依赖任何数据库即可全绿** |
 | 密钥库集成 | **Linux**：真访问本机 freedesktop Secret Service（`SecretServiceKeyProviderTests.cs`），**用唯一 `application` 属性隔离并结束即删**，不污染用户真实凭据；无会话总线/服务即 `Assert.Skip`。**macOS**：真访问 login keychain（`MacKeychainKeyProviderTests.cs`），唯一 `service` 隔离 + `suppressUi`（禁授权框）+ 结束即删；非 macOS `Assert.Skip`。信封加密本身一律用**假主密钥**（`FakeMasterKeyProvider`）纯单测，CI 无密钥库也全绿 |
 | ViewModels | 纯逻辑测（不启 Avalonia）；测试工程 ProjectReference 壳工程；交互留到 Avalonia.Headless（M3 再引入）。**替身分层**：`StubXxx`（对话框/选择器）与 `ScriptedMetadataExplorer`（可编排「库→模式→对象」形状，让树的多层逻辑无需靶机即可测透，M5-2） |
@@ -428,10 +429,10 @@ public sealed class DbSession : IAsyncDisposable
 ## 8. Milestones 与验收
 
 - [x] **M1 黄金闭环（SQLite）**：Provider.Sqlite 进主工程+测试工程 → Core 工程（Connections/Metadata/Querying）→ MainWindow 连 SQLite 文件 → 左树展开 → `SELECT 1` 出网格。验收：xunit 全绿 ✅ + GPL 防回归测试进仓库 ✅ + 手动截图 ✅（2026-10-11 人工验收通过）。
-- [ ] **M2 多方言**：仅剩 SqlServer 待靶机。
+- [x] **M2 多方言**：SQLite、MySQL/MariaDB、PostgreSQL、SQL Server 均已接入连接层；MySQL/PG 和 SQL Server 有靶机集成覆盖。
   - [x] M2-a：MySqlConnector / PostgreSQL 接入并接靶机实测通过；GPL 防回归升级为真测试（§7）。（"MasterPool 冒烟测试回写 §4" 已在 M1-1 完成。）
-  - [x] M2-b：连接对话框按 Provider 出参数表 + Provider 友好名 + 测试连接按钮；SqlServer 明确不入包、不入对话框（§2.2）。
-  - [ ] M2-c：**SqlServer 支持——待靶机**（无靶机不装包、不进对话框，§2.2）。
+  - [x] M2-b：连接对话框按 Provider 出参数表 + Provider 友好名 + 测试连接按钮。
+  - [x] M2-c（2026-10-11）：SQL Server Provider、连接对话框与连接串/TLS 选项接入；新增 SQL Server dialect/catalog routing，查询、当前库读取、表元数据/DDL 重建已用 SQL Server 2022 Developer 靶机验证。自动服务端分页关闭；目录对象和原始定义未实现（列入 M5-3）。
 - [x] **M3 编辑器与会话**：SQL 编辑器（AvaloniaEdit 12.0.0，§2.7 实查通过）；事务模式（LeaseRawAsync）；取消执行；结果网格**服务端分页 + 行虚拟化**（M3-1..M3-4 均已完成，2026-10-05）。
 - [x] **M4 生产力功能**：连接凭据加密存储（三平台 + UI 接线）、导出 CSV/INSERT、DDL 预览、ISqlDialect 落地。**已全部完成**（2026-10-05，含 M4-4 的壳工程接线）。
 - [ ] **M5 元数据完整性**（2026-10-08 起）：把 IDbFirst 的缺口补齐到"用户可见、可测"。
@@ -468,16 +469,16 @@ public sealed class DbSession : IAsyncDisposable
     · **列类型感知（结果网格）**：新增 `Core/Querying/ResultCellKinds.cs`（`Infer`/`Classify`/`Compare`/`Sorted`/`Cell`，纯逻辑、可单测）——`QueryResult` 本身不带类型元数据，只能按**已读回的值**推断：数字与日期右对齐、文本左对齐（单元格 `TextBlock` 要 `HorizontalAlignment = Stretch`，否则缩到文字宽度、对齐看不出效果）；两种类型混在同一列就退回纯文本比较。
     · **表头点击排序**：`ResultColumns` 增 `Cells`/`Sort` 附加属性——`Sort` 非空时表头换成透明 `Button`（`CommandParameter = 列号`）绑 `QueryTabViewModel.SortCommand`，为 null 时保持纯文本（不假装能排序）。比较规则：null **两个方向都排最后**、数字按数值（`Convert.ToDecimal`，溢出退 `double`）、日期按时间点（ticks）、`byte[]` 逐字节再比长度、同分稳定排序。**只排当前页已读回的行**——服务端分页下手里没有整表；故 DataGrid 保持 `CanUserSortColumns="False"`，不用它自带的排序（`DataGridTemplateColumn` 无 `SortMemberPath`，索引式 `object?[]` 行也进不了 `DataGridCollectionView`）。重新执行 / 翻页即清排序（`ResetSort()` 放在唯一让结果落地的私有 `RunAsync` 里）。
     · **本轮实测**：`dotnet build DdraigBench.slnx -c Release` → 0 警告 0 错误；`dotnet test DdraigBench.slnx -c Release` → **总计 293 / 成功 266 / 跳过 27 / 失败 0**（第二批后基线 281 / 254 / 27 / 0；本批 +12 测 = `ResultCellKinds` 7 + `QueryTabViewModel` 2 + `HeadlessUi` 3，− C9 的 1 个空测）。README 的徽章 / 用例数 / 查询段特性 / 已知限制 5·7·8 / 路线图已同步。
-  - [ ] **M5-3（待做）**：事件与分区、MySQL/PG 的触发器与例程定义、MySQL 表定义（`SHOW CREATE TABLE`）、PG 物化视图。**注意**：这些几乎全是"无靶机就无法实测"的方言代码——按 §8 的既定原则（SqlServer 挂起）应先把靶机（`DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`）接上再做，别堆未验证的 SQL。
+  - [ ] **M5-3（待做）**：MySQL 事件与分区、MySQL/PG 的触发器与例程定义、MySQL 表定义（`SHOW CREATE TABLE`）、PG 物化视图；SQL Server 目录对象/定义查询、视图原始定义，以及安全服务端分页（当前自动分页关闭，普通查询仍执行并受客户端读取上限保护）。MySQL/PG 需用对应靶机（`DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`）实测；SQL Server 新增目录 SQL 与 T-SQL 分页实现也必须用 `DDRAIGBENCH_SQLSERVER` 靶机验证后再入库，不提交未经验证的方言代码。
 M0（依赖整改）已完成：`FreeSql.All` 已替换为裸 `FreeSql`，GPL 风险源已移除。UI 依赖骨架亦已就位（FluentAvaloniaUI 3.1.0 主题 + FluentIcons.Avalonia.Fluent 2.1.343 + Avalonia.Controls.DataGrid 12.1.2，§2.6）。
 
-M1 进度：**M1-1 地基** + **M1-2 Querying** + **M1-3 Connections** + **M1-4 Metadata/Sessions** + **M1-6 UI 闭环** + **M1-7 GPL 防回归（静态断言）** 完成（2026-09-18）——Core 工程 + Provider.Sqlite（主/测/Core）+ SQLite 冒烟测试 + MasterPool 取还语义实测（§4）+ `QueryResult`/`QueryRunner` + `ConnectionProfile`/`FreeSqlFactory` + `IMetadataExplorer`/`FreeSqlMetadataExplorer`（Table/View/Column）+ `DbSession`/`ConnectionLease` + `MainViewModel`/`ConnectionTreeNodeViewModel`/`QueryTabViewModel` + `ResultColumns`（DataGrid 动态列附加属性）+ `IFilePicker` + `GplRegressionTests`。测试 25 个全绿（xunit.v3 4.0.1，含 VM 纯逻辑测）。M1 仅剩 **手动截图验收**（本环境无显示器，需人工 `dotnet run -c Release --project DdraigBench` 确认：打开 SQLite → 左树展开 → `SELECT 1` 出网格；用 Release 可绕开 IDE 预览器对 `bin\Debug` 的文件锁，见 §9）。
+M1 历史进度（2026-09-18）：**M1-1 地基** + **M1-2 Querying** + **M1-3 Connections** + **M1-4 Metadata/Sessions** + **M1-6 UI 闭环** + **M1-7 GPL 防回归（静态断言）** 完成——Core 工程 + Provider.Sqlite（主/测/Core）+ SQLite 冒烟测试 + MasterPool 取还语义实测（§4）+ `QueryResult`/`QueryRunner` + `ConnectionProfile`/`FreeSqlFactory` + `IMetadataExplorer`/`FreeSqlMetadataExplorer`（Table/View/Column）+ `DbSession`/`ConnectionLease` + `MainViewModel`/`ConnectionTreeNodeViewModel`/`QueryTabViewModel` + `ResultColumns`（DataGrid 动态列附加属性）+ `IFilePicker` + `GplRegressionTests`。当时测试 25 个全绿；当时剩余的手动截图验收已于 2026-10-11 通过（见 §8 M1），不再是待办。
 
-M2 进度：**M2-a 完成**（2026-09-18）——`FreeSql.Provider.MySqlConnector` + `FreeSql.Provider.PostgreSQL` 3.5.311 进 Core/主/测（§2.1）；GPL 防回归升级为**真测试**（程序集加载探测，§7）；多方言集成测试接通本地 AlmaLinux 靶机（MariaDB 10.5 / PostgreSQL 13），`SELECT 1` + `GetDatabasesAsync` 实跑通过。测试 30 个全绿（无靶机时 2 个集成测试跳过）。**M2 剩余**：SqlServer 待靶机；连接对话框可再打磨（Provider 友好名、连接测试按钮）。
+M2-a 历史进度（2026-09-18）：当时接入 `FreeSql.Provider.MySqlConnector` + `FreeSql.Provider.PostgreSQL` 3.5.311 并通过 MariaDB 10.5 / PostgreSQL 13 靶机集成测试；当时遗留的 SQL Server 与连接对话框项已由下方 M2-b/M2-c 完成，当前状态以 §8 M2 检查项为准。
 
 M2-b（2026-09-18）**完成**：`ConnectionParameters`/`ConnectionStringBuilder`（Core，按 Provider 生成连接串与建议名）+ `ConnectionDialogViewModel`（Provider 切换/校验/`BuildProfile`，纯逻辑）+ `ConnectionDialogView.axaml` + `IConnectionDialog`/`ConnectionDialog`（Avalonia `ShowDialog`，VM 不碰 Avalonia）落地；`MainViewModel` 的 SQLite 专用入口已换成对话框入口（`OpenConnectionCommand`），`MainWindow`/`App` 接线完成。测试 45 个全绿（无靶机时 2 个集成测试跳过）。
 
-M2 收尾（2026-09-18）：连接对话框加 **Provider 友好名**（`ProviderOption.DisplayName`：SQLite（本地文件）/ MySQL / MariaDB / PostgreSQL）与 **测试连接** 按钮（`IConnectionTester` + `FreeSqlConnectionTester`，返回 `null` 即成功、失败给出原因；VM 侧 `TestSucceeded`/`TestFailure`）。SqlServer **明确挂起**（无靶机 → 不装包、不入对话框，见 §2.2）。测试 52 个全绿（无靶机时 2 跳过；接靶机时 52/52）。**M2 至此收口**，仅余 SqlServer 一项待靶机。
+M2-b 历史收尾（2026-09-18）：当时连接对话框已加入 Provider 友好名（SQLite / MySQL / MariaDB / PostgreSQL）与测试连接按钮；当时 SQL Server 明确挂起、M2 曾暂时收口。该挂起状态已被 2026-10-11 的 M2-c 取代：SQL Server Provider 与 UI 已接入并完成 SQL Server 2022 靶机基础集成验证，当前剩余限制见 §8 M5-3。
 
 M3 进度（2026-09-18 起，2026-10-05 收口）：
 - **M3-1 取消执行 ✅**：`QueryTabViewModel` 接 `CancellationTokenSource`（`Cancel()`/`CanCancel`，含"执行刚开始时按下也生效"的 `_cancelRequested` 兜底），token 贯穿 `QueryRunner.ExecuteAsync` → ADO；执行中显示"取消"按钮（`MainWindow` 绑 `SelectedTab.CanCancel`）。

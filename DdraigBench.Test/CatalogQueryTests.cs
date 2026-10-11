@@ -16,6 +16,7 @@ public sealed class CatalogQueryTests
     [InlineData(DataType.Sqlite)]
     [InlineData(DataType.MySql)]
     [InlineData(DataType.PostgreSQL)]
+    [InlineData(DataType.SqlServer)]
     public void Installed_dialects_have_catalog_queries(DataType dataType)
     {
         Assert.True(CatalogQuerySets.TryGet(dataType, out var catalog));
@@ -23,10 +24,18 @@ public sealed class CatalogQueryTests
     }
 
     [Fact]
-    public void Unknown_dialect_reports_not_supported()
+    public void SqlServer_catalog_support_is_empty_while_tables_and_views_use_idbfirst()
     {
-        Assert.Throws<NotSupportedException>(() => CatalogQuerySets.Get(DataType.SqlServer));
-        Assert.False(CatalogQuerySets.TryGet(DataType.SqlServer, out _));
+        var catalog = CatalogQuerySets.Get(DataType.SqlServer);
+
+        Assert.True(catalog.ConnectionIsBoundToSingleDatabase);
+        Assert.Equal("SELECT DB_NAME() AS name", catalog.BuildCurrentDatabaseQuery());
+        Assert.False(catalog.Supports(DbObjectKind.Schema));
+        Assert.False(catalog.Supports(DbObjectKind.Trigger));
+        Assert.False(catalog.Supports(DbObjectKind.Function));
+        Assert.False(catalog.Supports(DbObjectKind.StoredProcedure));
+        Assert.False(catalog.SupportsViewDefinitions);
+        Assert.False(catalog.SupportsTableDefinitions);
     }
 
     [Theory]
@@ -78,6 +87,8 @@ public sealed class CatalogQueryTests
         Assert.True(PostgreSqlCatalogQueries.Instance.ConnectionIsBoundToSingleDatabase);
         Assert.False(SqliteCatalogQueries.Instance.ConnectionIsBoundToSingleDatabase);
         Assert.False(MySqlCatalogQueries.Instance.ConnectionIsBoundToSingleDatabase);
+        Assert.True(CatalogQuerySets.Get(DataType.SqlServer).ConnectionIsBoundToSingleDatabase);
+        Assert.Equal("SELECT DB_NAME() AS name", CatalogQuerySets.Get(DataType.SqlServer).BuildCurrentDatabaseQuery());
 
         Assert.Equal("SELECT current_database() AS name", PostgreSqlCatalogQueries.Instance.BuildCurrentDatabaseQuery());
 

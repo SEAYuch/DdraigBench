@@ -22,6 +22,7 @@ public sealed class ConnectionDialogViewModel : ViewModelBase
     private string _database = string.Empty;
     private string _user = string.Empty;
     private string _password = string.Empty;
+    private bool _trustServerCertificate;
     private string? _error;
     private bool _isTesting;
     private bool _testSucceeded;
@@ -46,6 +47,7 @@ public sealed class ConnectionDialogViewModel : ViewModelBase
         new ProviderOption(DataType.Sqlite, "SQLite（本地文件）"),
         new ProviderOption(DataType.MySql, "MySQL / MariaDB"),
         new ProviderOption(DataType.PostgreSQL, "PostgreSQL"),
+        new ProviderOption(DataType.SqlServer, "SQL Server"),
     };
 
     public ICommand ConfirmCommand { get; }
@@ -70,6 +72,7 @@ public sealed class ConnectionDialogViewModel : ViewModelBase
             this.RaisePropertyChanged(nameof(Provider));
             this.RaisePropertyChanged(nameof(IsFileBased));
             this.RaisePropertyChanged(nameof(IsServerBased));
+            this.RaisePropertyChanged(nameof(IsSqlServer));
             ResetTestResult();
             OnProviderChanged();
         }
@@ -84,6 +87,8 @@ public sealed class ConnectionDialogViewModel : ViewModelBase
     public bool IsFileBased => Provider == DataType.Sqlite;
 
     public bool IsServerBased => !IsFileBased;
+
+    public bool IsSqlServer => Provider == DataType.SqlServer;
 
     public string Name
     {
@@ -125,6 +130,12 @@ public sealed class ConnectionDialogViewModel : ViewModelBase
     {
         get => _password;
         set => this.RaiseAndSetIfChanged(ref _password, value);
+    }
+
+    public bool TrustServerCertificate
+    {
+        get => _trustServerCertificate;
+        set => this.RaiseAndSetIfChanged(ref _trustServerCertificate, value);
     }
 
     public string? Error
@@ -248,7 +259,8 @@ public sealed class ConnectionDialogViewModel : ViewModelBase
             Port: port,
             Database: Database.Trim(),
             User: User.Trim(),
-            Password: Password);
+            Password: Password,
+            TrustServerCertificate: Provider == DataType.SqlServer && TrustServerCertificate);
 
         return ToProfile(server, Provider);
     }

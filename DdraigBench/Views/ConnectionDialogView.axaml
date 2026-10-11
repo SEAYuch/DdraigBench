@@ -57,8 +57,11 @@
                 <TextBox Grid.Column="1" Margin="8,0,0,0" Width="90" Text="{Binding Port}" PlaceholderText="端口" />
             </Grid>
             <TextBox Text="{Binding Database}" PlaceholderText="数据库名" />
-            <TextBox Text="{Binding User}" PlaceholderText="用户名" />
+            <TextBox Text="{Binding User}" PlaceholderText="用户名 / 登录名" />
             <TextBox Text="{Binding Password}" PasswordChar="●" PlaceholderText="口令" />
+            <CheckBox IsVisible="{Binding IsSqlServer}"
+                      IsChecked="{Binding TrustServerCertificate}"
+                      Content="信任服务器证书（仅自签证书/测试环境）" />
         </StackPanel>
 
         <TextBlock Text="连接名（留空自动生成）" Classes="field-label" />

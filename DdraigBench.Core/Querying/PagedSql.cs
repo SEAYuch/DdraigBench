@@ -29,7 +29,7 @@ public static class PagedSql
     {
         ArgumentNullException.ThrowIfNull(dialect);
 
-        if (pageSize <= 0 || offset < 0)
+        if (pageSize <= 0 || offset < 0 || !dialect.SupportsServerPaging)
         {
             return null;
         }

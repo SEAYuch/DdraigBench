@@ -13,22 +13,22 @@
 | 项 | 状态 |
 |---|---|
 | 构建 | `dotnet build DdraigBench.slnx -c Release` — **零警告零错误** |
-| 测试 | **293 个用例**（266 通过 / 27 跳过 — 跳过项为无环境用例：macOS 钥匙串、freedesktop Secret Service、Unix 文件权限、MySQL/PG 靶机） |
-| 已实现方言 | SQLite、MySQL / MariaDB、PostgreSQL |
-| 里程碑 | M1 闭环 / M2 多方言 / M3 编辑器与会话 / M4 生产力功能 / M5-1 目录查询层 / M5-2 模式层 — **均已落地**（M5-3 与 SQL Server 待靶机） |
+| 测试 | **302 个用例**（274 通过 / 28 跳过 — 跳过项为无环境用例：macOS 钥匙串、freedesktop Secret Service、Unix 文件权限、MySQL/PG/SQL Server 靶机） |
+| 已实现方言 | SQLite、MySQL / MariaDB、PostgreSQL、SQL Server |
+| 里程碑 | M1 闭环 / M2 多方言 / M3 编辑器与会话 / M4 生产力功能 / M5-1 目录查询层 / M5-2 模式层 — **均已落地**（M5-3 元数据缺口仍在） |
 
-> 截图待补（开发环境无显示器，UI 验收为人工项，见「已知限制」）。
+> 工作台人工验收已通过；截图未入库（见 AGENTS.md §8 的 M1 验收记录）。
 
 ## 功能
 
 **连接**
-- 按 Provider 出参数表的连接对话框（SQLite 本地文件 / MySQL / MariaDB / PostgreSQL）
+- 按 Provider 出参数表的连接对话框（SQLite 本地文件 / MySQL / MariaDB / PostgreSQL / SQL Server）；SQL Server 默认启用加密并验证证书，自签证书仅可显式勾选信任选项
 - 连接测试按钮（返回成功或可读的失败原因）
 - 连接清单持久化：camelCase JSON，**连接串密码经系统密钥库加密**（Windows DPAPI / Linux+FreeBSD freedesktop Secret Service / macOS Keychain；无密钥库时回退明文并在顶部告警），名称与方言明文便于列表展示
 - 清单 UI：左侧已保存连接列表（双击激活）+ 标题栏「移除」（未选中时禁用）+ 明文回退告警条；清单读取失败时**放弃本次会话写盘**，绝不覆盖既有文件
 
 **对象浏览**
-- 左侧树惰性加载：SQLite / MySQL「库 → 表 / 视图 / 触发器 / 函数 / 存储过程 → 列」，PostgreSQL 多一层「模式」（M5-2）
+- 左侧树惰性加载：SQLite / MySQL「库 → 表 / 视图 / 触发器 / 函数 / 存储过程 → 列」，PostgreSQL 多一层「模式」（M5-2），SQL Server 浏览当前库
 - 树筛选（只筛已加载节点，不清库）与展开失败收敛（失败写状态栏、清掉失败前塞进去的半个子树，并可右键「重试加载」或折叠后重新展开，不留"静默空树"）
 - **DDL 预览**：**原始定义优先**（SQLite 读 `sqlite_master.sql`，保留 `AUTOINCREMENT` / 内联 `UNIQUE` / `CHECK` / `COLLATE`），取不到才按 `IDbFirst` 元数据重建 `CREATE TABLE` / `CREATE [UNIQUE] INDEX` / 外键 / 注释 / DEFAULT，可直接复制执行
 
@@ -36,7 +36,7 @@
 - SQL 编辑器（AvaloniaEdit）：行号、等宽、不换行
 - 执行 / **取消**（长查询可中断）
 - **事务模式**：显式提交 / 回滚，切换连接时自动回滚
-- **真·服务端分页**（M3-5）：查询包成派生表 + `LIMIT/OFFSET`，多取一行判定"有无下一页"；工具条可配每页行数并翻页；结果网格行虚拟化
+- **真·服务端分页**（M3-5）：SQLite / MySQL / PostgreSQL 查询包成派生表 + `LIMIT/OFFSET`，多取一行判定"有无下一页"；工具条可配每页行数并翻页；结果网格行虚拟化。SQL Server 当前禁用自动服务端分页（派生表内裸 `ORDER BY` 会报错/改变语义），查询仍可执行并受客户端读取上限保护
 - 结果集单元格直读无类型行数组（不经绑定引擎）；**列类型感知**：按已读回的值推断列类型，数字与日期右对齐、文本左对齐；二进制列（BLOB）显示为十六进制前缀，超长只截前 32 字节并标注总长，不再显示 `System.Byte[]`
 - **表头点击排序**：按列类型比较（数字按数值、"10" > "9"；日期按时间点；空值一律排最后；同分保持原顺序），再点同一列切换升降序，状态栏显示当前排序
 - **导出默认路径**：默认落在「文档」目录下的 `export.csv` / `export.sql`（绝对路径），不再相对进程工作目录（快捷方式启动时那是 `System32` 之类不可写的位置）
@@ -46,7 +46,7 @@
 - **INSERT 脚本**（标识符引用与字面量按方言渲染，支持每语句多行）
 
 **方言层**（`ISqlDialect`）
-- 标识符引用、分页子句、字面量渲染、自增列定义——SQLite / MySQL / PostgreSQL 三实现
+- 标识符引用、分页子句、字面量渲染、自增列定义——SQLite / MySQL / PostgreSQL / SQL Server；SQL Server 目前禁用 `PagedSql` 自动派生表分页
 
 ## 技术栈
 
@@ -60,7 +60,7 @@
 | FluentIcons.Avalonia.Fluent（图标，与主题配对） | 2.1.343 | MIT |
 | ReactiveUI.Avalonia | 12.1.6 | MIT |
 | FreeSql（方言引擎 + 元数据引擎） | 3.5.311 | MIT |
-| FreeSql.Provider.Sqlite / MySqlConnector / PostgreSQL | 3.5.311 | MIT |
+| FreeSql.Provider.Sqlite / MySqlConnector / PostgreSQL / SqlServer | 3.5.311 | MIT |
 | System.Security.Cryptography.ProtectedData | 10.0.12 | MIT |
 | Ace4896.DBus.Services.Secrets（freedesktop Secret Service 托管 D-Bus 绑定） | 1.6.0 | MIT |
 | Tmds.DBus.Protocol（上者的传递依赖，无原生库） | 0.9x | MIT |
@@ -108,7 +108,7 @@ dotnet run   --project DdraigBench                # 启动应用
 
 - **Core 逻辑** → xunit 单测；数据库依赖一律用**临时 SQLite 文件**（不 mock `IFreeSql`，走真连接）
 - **GPL 防回归** → 静态断言 + 程序集加载探测（`MySqlConnector` 必须可加载，`MySql.Data` / `FreeSql.Provider.MySql` 必须加载失败）
-- **多方言集成** → 读环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG`；未设置或不可达即 `Assert.Skip`（**凭据不进仓库**）
+- **多方言集成** → 读环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG` / `DDRAIGBENCH_SQLSERVER`；未设置或不可达即 `Assert.Skip`（**凭据不进仓库**）。SQL Server 用 `DDRAIGBENCH_SQLSERVER` 覆盖连接串，在 SQL Server 2022 Developer 靶机执行查询、当前库与表元数据/DDL 往返验证
 - **密钥库集成** → 真访问本机 freedesktop Secret Service；用唯一 `application` 属性隔离并结束即删，**不污染真实凭据**；无会话总线即 `Assert.Skip`。信封加密本身用假主密钥纯单测，**CI 无密钥库也全绿**
 - **ViewModel** → 纯逻辑测，不启 Avalonia
 - **控件级** → `Avalonia.Headless` + xUnit v3 `AssemblyFixture`（覆盖结果网格动态列、工作台折叠还原、强调色对比度；只 new 控件，不构造 `Window`——headless 下 Composition 归 fixture 线程，测试线程建 `TopLevel` 会抛 `InvalidOperationException`）
@@ -117,7 +117,7 @@ dotnet run   --project DdraigBench                # 启动应用
 
 诚实列出当前**未做 / 未实测**的部分：
 
-1. **SQL Server 挂起**——无靶机，故不装 `FreeSql.Provider.SqlServer`、也不进连接对话框（避免未实测代码入库）。
+1. **SQL Server 元数据尚未完整**——Provider、连接对话框、连接测试、查询、当前库枚举、表/视图元数据和表 DDL 重建均已接入；SQL Server 2022 Developer（AlmaLinux 9.8 上 Podman 容器）靶机实测通过。事件/分区/触发器/例程清单与定义、视图原始定义尚未实现；当前使用 FreeSql IDbFirst 浏览表/视图并重建表 DDL。自动服务端分页有意关闭（`PagedSql` 的派生表包装不符合 T-SQL 对子查询 `ORDER BY` 的要求，且移除排序会改变语义），查询仍可执行并受客户端读取上限保护。
 2. **M5-3 元数据仍有缺口**——已落地：视图定义（SQLite / MySQL / PG 三方）、SQLite 的触发器定义、触发器 / 函数 / 存储过程**清单**、PG 模式层（M5-1 / M5-2）。仍缺：事件（`information_schema.EVENTS`）、分区（`information_schema.PARTITIONS`）、MySQL/PG 的触发器与例程**定义**、MySQL 表定义（`SHOW CREATE TABLE`）、PG 物化视图（`relkind='m'`）。这些几乎全要 MySQL/PG 靶机实测，按「未实测代码不入库」原则挂起。
 3. **连接清单 UI 只能新建 / 打开 / 删除**——2026-10-11 起：左栏「连接」标题栏新增移除按钮（绑 `ForgetSavedConnectionCommand`，未选中时禁用），删除已有入口；与主题下拉框重复的死命令 `SetThemeCommand` 已删除（C4）。仍欠**编辑**已保存连接（改名 / 改连接串 / 改口令）。
 4. **需要 UI 线程的控件无法在测试里构造**——如 `TextEditor`；`HeadlessUnitTestSession` 在 MTP + fixture 组合下实测挂死，`new Window()` 也会抛 `InvalidOperationException`（Composition 归 fixture 线程）。动态列等不触碰 Dispatcher 的控件已纳入 headless 回归。
@@ -128,8 +128,7 @@ dotnet run   --project DdraigBench                # 启动应用
 
 ## 路线图
 
-- M5-3：事件与分区、MySQL/PG 触发器与例程定义、MySQL 表定义、PG 物化视图（**需先接上 MySQL/PG 靶机**）
-- M5：SQL Server 支持（需靶机）
+- M5-3：事件与分区、MySQL/PG 触发器与例程定义、MySQL 表定义、PG 物化视图；并补齐 SQL Server 目录对象与定义查询、视图定义及安全服务端分页（SQL Server 基础连接/查询已实测）
 - 连接清单的**编辑**（重命名 / 改连接串 / 改口令；新建 / 打开 / 删除已就绪）
 - 跨平台密钥库打磨：libsecret 直连评估、钥匙串 ACL 异常的用户可读提示
 - 结果网格的**跨页 / 服务端排序**（表头点击排序当前页、数字与日期右对齐已就绪，见「已知限制」8）

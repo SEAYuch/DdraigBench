@@ -60,7 +60,7 @@ public sealed class ConnectionDialogViewModelTests
         var vm = Create();
 
         Assert.Equal(
-            new[] { "SQLite（本地文件）", "MySQL / MariaDB", "PostgreSQL" },
+            new[] { "SQLite（本地文件）", "MySQL / MariaDB", "PostgreSQL", "SQL Server" },
             vm.ProviderOptions.Select(o => o.DisplayName));
         Assert.Equal("SQLite（本地文件）", vm.SelectedProvider.DisplayName);
     }
@@ -77,8 +77,14 @@ public sealed class ConnectionDialogViewModelTests
         vm.Provider = DataType.MySql;
         Assert.Equal("3306", vm.Port);
 
+        vm.Provider = DataType.SqlServer;
+        Assert.Equal("1433", vm.Port);
+        Assert.True(vm.IsSqlServer);
+        Assert.False(vm.TrustServerCertificate);
+
         vm.Provider = DataType.Sqlite;
         Assert.Equal(string.Empty, vm.Port);
+        Assert.False(vm.IsSqlServer);
     }
 
     [Fact]
@@ -142,6 +148,28 @@ public sealed class ConnectionDialogViewModelTests
         Assert.Equal("u@localhost/d", profile!.Name);
         Assert.Equal(DataType.MySql, profile.DataType);
         Assert.Contains("Port=3306", profile.ConnectionString, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SqlServer_builds_profile_and_only_trusts_certificate_when_opted_in()
+    {
+        var vm = Create();
+        vm.Provider = DataType.SqlServer;
+        vm.Host = "sql.example";
+        vm.Database = "app";
+        vm.User = "sa";
+
+        var secureProfile = vm.BuildProfile();
+
+        Assert.NotNull(secureProfile);
+        Assert.Contains("Server=sql.example,1433", secureProfile!.ConnectionString, StringComparison.Ordinal);
+        Assert.Contains("TrustServerCertificate=False", secureProfile.ConnectionString, StringComparison.Ordinal);
+
+        vm.TrustServerCertificate = true;
+        var testProfile = vm.BuildProfile();
+
+        Assert.NotNull(testProfile);
+        Assert.Contains("TrustServerCertificate=True", testProfile!.ConnectionString, StringComparison.Ordinal);
     }
 
     [Fact]

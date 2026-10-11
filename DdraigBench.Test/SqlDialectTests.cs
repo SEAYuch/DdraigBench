@@ -1,6 +1,7 @@
 // DdraigBench — ISqlDialect 单测
 
 using DdraigBench.Core.Dialects;
+using DdraigBench.Core.Querying;
 using FreeSql;
 
 namespace DdraigBench.Test;
@@ -11,6 +12,7 @@ public sealed class SqlDialectTests
     [InlineData(DataType.Sqlite, "\"t\"")]
     [InlineData(DataType.MySql, "`t`")]
     [InlineData(DataType.PostgreSQL, "\"t\"")]
+    [InlineData(DataType.SqlServer, "[t]")]
     public void Quote_identifier_per_dialect(DataType dataType, string expected)
     {
         Assert.Equal(expected, SqlDialects.Get(dataType).QuoteIdentifier("t"));
@@ -22,6 +24,7 @@ public sealed class SqlDialectTests
         Assert.Equal("\"a\"\"b\"", SqlDialects.Get(DataType.Sqlite).QuoteIdentifier("a\"b"));
         Assert.Equal("`a``b`", SqlDialects.Get(DataType.MySql).QuoteIdentifier("a`b"));
         Assert.Equal("\"a\"\"b\"", SqlDialects.Get(DataType.PostgreSQL).QuoteIdentifier("a\"b"));
+        Assert.Equal("[a]]b]", SqlDialects.Get(DataType.SqlServer).QuoteIdentifier("a]b"));
     }
 
     [Fact]
@@ -73,9 +76,14 @@ public sealed class SqlDialectTests
     }
 
     [Fact]
-    public void Unknown_dialect_throws_and_tryget_returns_false()
+    public void SqlServer_uses_tsql_literals_and_disables_unsafe_automatic_paging()
     {
-        Assert.Throws<NotSupportedException>(() => SqlDialects.Get(DataType.SqlServer));
-        Assert.False(SqlDialects.TryGet(DataType.SqlServer, out _));
+        var dialect = SqlDialects.Get(DataType.SqlServer);
+
+        Assert.Equal("1", dialect.FormatLiteral(true));
+        Assert.Equal("0", dialect.FormatLiteral(false));
+        Assert.Equal("0x6869", dialect.FormatLiteral(new byte[] { 0x68, 0x69 }));
+        Assert.False(dialect.SupportsServerPaging);
+        Assert.Null(PagedSql.Build("SELECT id FROM t ORDER BY id", dialect, 51, 0));
     }
 }

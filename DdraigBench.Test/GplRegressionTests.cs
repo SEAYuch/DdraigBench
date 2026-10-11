@@ -55,6 +55,13 @@ public sealed class GplRegressionTests
     }
 
     [Fact]
+    public void SqlServer_provider_uses_Microsoft_Data_SqlClient()
+    {
+        Assert.True(CanLoadAssembly("Microsoft.Data.SqlClient"), "应存在 Microsoft.Data.SqlClient 驱动程序集");
+        Assert.True(CanLoadAssembly("FreeSql.Provider.SqlServer"), "应存在 SQL Server Provider 程序集");
+    }
+
+    [Fact]
     public void PostgreSql_provider_uses_Npgsql_driver()
     {
         Assert.True(CanLoadAssembly("Npgsql"), "应存在 Npgsql 驱动程序集");
@@ -62,9 +69,9 @@ public sealed class GplRegressionTests
     }
 
     [Fact]
-    public void MySql_and_PostgreSql_data_types_are_registered()
+    public void MySql_PostgreSql_and_SqlServer_data_types_are_registered()
     {
-        // 两个方言都能建出 IFreeSql（不连接），证明 Provider 已随程序集注册（SQLite 由 SqliteSmokeTests 覆盖）
+        // 三个服务端方言都能建出 IFreeSql（不连接），证明 Provider 已随程序集注册（SQLite 由 SqliteSmokeTests 覆盖）
         using var mysql = new FreeSqlBuilder()
             .UseConnectionString(DataType.MySql, "Server=127.0.0.1;Port=1;Database=none;Uid=none;Pwd=none")
             .Build();
@@ -72,9 +79,14 @@ public sealed class GplRegressionTests
             .UseConnectionString(
                 DataType.PostgreSQL, "Host=127.0.0.1;Port=1;Database=none;Username=none;Password=none")
             .Build();
+        using var sqlServer = new FreeSqlBuilder()
+            .UseConnectionString(
+                DataType.SqlServer, "Server=127.0.0.1,1;Database=none;User Id=none;Password=none;Encrypt=True")
+            .Build();
 
         Assert.Equal(DataType.MySql, mysql.Ado.DataType);
         Assert.Equal(DataType.PostgreSQL, postgres.Ado.DataType);
+        Assert.Equal(DataType.SqlServer, sqlServer.Ado.DataType);
     }
 
     private static bool CanLoadAssembly(string simpleName)

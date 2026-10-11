@@ -8,6 +8,8 @@ public abstract class SqlDialectBase : ISqlDialect
 {
     public abstract string QuoteIdentifier(string name);
 
+    public virtual bool SupportsServerPaging => true;
+
     public virtual string BuildPaging(int limit, long offset) => $"LIMIT {limit} OFFSET {offset}";
 
     public virtual string FormatLiteral(object? value) => value switch

@@ -10,6 +10,7 @@ public static class ConnectionStringBuilder
     {
         DataType.MySql => 3306,
         DataType.PostgreSQL => 5432,
+        DataType.SqlServer => 1433,
         _ => 0,
     };
 
@@ -23,6 +24,10 @@ public static class ConnectionStringBuilder
         DataType.PostgreSQL =>
             $"Host={Escape(p.Host)};Port={p.Port ?? DefaultPort(DataType.PostgreSQL)};Database={Escape(p.Database)};" +
             $"Username={Escape(p.User)};Password={Escape(p.Password)};Pooling=false",
+        DataType.SqlServer =>
+            $"Server={Escape(p.Host)},{p.Port ?? DefaultPort(DataType.SqlServer)};Database={Escape(p.Database)};" +
+            $"User Id={Escape(p.User)};Password={Escape(p.Password)};Encrypt=True;" +
+            $"TrustServerCertificate={(p.TrustServerCertificate ? "True" : "False")};Pooling=False",
         _ => throw new NotSupportedException($"暂不支持的 Provider：{p.DataType}"),
     };
 
@@ -56,6 +61,7 @@ public static class ConnectionStringBuilder
         // 用户可能粘贴任一平台的路径（Windows 反斜杠 / Unix 斜杠），故两种分隔符都要切；
         // 仅用 Path.GetFileName 会因平台差异漏切另一种分隔符。
         DataType.Sqlite => FileNameOf(p.FilePath ?? string.Empty),
+        DataType.SqlServer => $"{p.User}@{p.Host}:{p.Port ?? DefaultPort(DataType.SqlServer)}/{p.Database}",
         _ => $"{p.User}@{p.Host}/{p.Database}",
     };
 

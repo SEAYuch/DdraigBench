@@ -11,4 +11,5 @@ public sealed record ConnectionParameters(
     int? Port = null,
     string? Database = null,
     string? User = null,
-    string? Password = null);
+    string? Password = null,
+    bool TrustServerCertificate = false);
