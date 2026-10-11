@@ -315,4 +315,60 @@ public sealed class QueryTabViewModelTests
         Assert.Contains("影响 2 行", tab.Status);
         Assert.DoesNotContain("第 ", tab.Status);
     }
+
+    [Fact]
+    public async Task Sort_command_orders_the_current_page_and_toggles_direction()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (n INTEGER, label TEXT)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (n, label) VALUES (9, 'nine'), (10, 'ten'), (2, 'two')");
+
+        tab.Sql = "SELECT n, label FROM t";
+        await tab.ExecuteAsync();
+
+        Assert.Equal(3, tab.Rows.Count);
+
+        tab.SortCommand.Execute(0);
+
+        // 数值比较：2 < 9 < 10（按文本比会得到 10, 2, 9）
+        Assert.Equal(new[] { 2L, 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.Contains("升序", tab.Status);
+
+        tab.SortCommand.Execute(0);
+
+        Assert.Equal(new[] { 10L, 9L, 2L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.Contains("降序", tab.Status);
+
+        // 越界列号不改变结果（列号来自表头按钮，做个兜底）
+        tab.SortCommand.Execute(9);
+
+        Assert.Equal(new[] { 10L, 9L, 2L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+    }
+
+    [Fact]
+    public async Task Sorting_is_cleared_when_a_new_result_arrives()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (n INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (n) VALUES (9), (10), (2)");
+
+        tab.Sql = "SELECT n FROM t";
+        await tab.ExecuteAsync();
+        tab.SortCommand.Execute(0);
+        Assert.Equal(new[] { 2L, 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+
+        await tab.ExecuteAsync();
+
+        // 排序只对到达时的那一页有效：重新执行后回到服务端顺序，状态栏也不再声称在排序
+        Assert.Equal(new[] { 9L, 10L, 2L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.DoesNotContain("排序", tab.Status);
+    }
 }

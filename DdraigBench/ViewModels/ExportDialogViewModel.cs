@@ -17,7 +17,7 @@ public sealed class ExportDialogViewModel : ViewModelBase
     {
         Format = format;
         _filePicker = filePicker;
-        _filePath = format == ExportFormat.Csv ? "export.csv" : "export.sql";
+        _filePath = DefaultPath(format == ExportFormat.Csv ? "export.csv" : "export.sql");
         _tableName = "exported_table";
 
         BrowseCommand = ReactiveCommand.CreateFromTask(BrowseAsync);
@@ -74,13 +74,31 @@ public sealed class ExportDialogViewModel : ViewModelBase
     public bool CanConfirm =>
         !string.IsNullOrWhiteSpace(FilePath) && (!IsInsert || !string.IsNullOrWhiteSpace(TableName));
 
+    /// <summary>
+    /// 默认导出路径：文档目录下的文件名。
+    /// 不能用裸文件名——相对路径会被解析到进程工作目录（快捷方式启动时可能是 System32 之类不可写的位置），
+    /// 用户看到"导出失败"却不知道文件本该落在哪里（C6）。取不到文档目录就依次回落用户目录、当前目录。
+    /// </summary>
+    public static string DefaultPath(string fileName)
+    {
+        var directory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+
+        return string.IsNullOrWhiteSpace(directory) ? fileName : Path.Combine(directory, fileName);
+    }
+
     public async Task BrowseAsync()
     {
+        // 选择器只接受文件名（StorageProviderFilePicker 把它塞进 SuggestedFileName），
+        // 传整条路径会连目录一起显示在文件名框里。
         var path = await _filePicker.PickSaveFileAsync(
             Title,
             IsInsert ? "SQL 脚本" : "CSV 文件",
             IsInsert ? new[] { "*.sql" } : new[] { "*.csv" },
-            FilePath);
+            Path.GetFileName(FilePath));
 
         if (!string.IsNullOrEmpty(path))
         {

@@ -475,6 +475,65 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task Failed_expansion_is_retried_by_expanding_the_node_again()
+    {
+        using var db = new TempSqliteDatabase();
+        var explorer = new FlakyMetadataExplorer(failures: 1);
+
+        var vm = new MainViewModel(
+            new StubConnectionDialog(SqliteProfile(db)), new FreeSqlFactory(), explorer,
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()));
+        await vm.OpenConnectionAsync();
+
+        var database = vm.Databases.Single();
+        database.IsExpanded = true;
+        await WaitUntilAsync(() => database.LoadFailed);
+
+        Assert.True(database.LoadFailed);
+        Assert.Empty(database.Children);
+
+        // M9：失败不能被记成"已加载且为空"。旧实现把 _loaded 留在 true，
+        // 第二次展开会被直接跳过，用户再也看不到对象、也没有任何重试入口。
+        database.IsExpanded = false;
+        database.IsExpanded = true;
+
+        await WaitUntilAsync(() => database.Children.Count > 0);
+
+        Assert.Contains(database.Children, c => c.Name == "表");
+        Assert.False(database.LoadFailed);
+    }
+
+    [Fact]
+    public async Task Failed_expansion_drops_the_half_built_subtree_and_retries_from_the_menu()
+    {
+        using var db = new TempSqliteDatabase();
+
+        // 表查得出来、触发器查询炸掉：失败那一刻「表」组已经在节点上了
+        var explorer = new FlakyMetadataExplorer(failures: 1, failOnKind: DbObjectKind.Trigger);
+
+        var vm = new MainViewModel(
+            new StubConnectionDialog(SqliteProfile(db)), new FreeSqlFactory(), explorer,
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()));
+        await vm.OpenConnectionAsync();
+
+        var database = vm.Databases.Single();
+        database.IsExpanded = true;
+        await WaitUntilAsync(() => database.LoadFailed);
+
+        // 半个子树必须清掉，否则重试会在同一节点上再叠一组「表」
+        Assert.Empty(database.Children);
+
+        // 树右键「重试加载」（MainWindow.axaml 的 ObjectContextMenu → RetryLoadCommand）
+        await vm.RetryLoadAsync(database);
+
+        Assert.False(database.LoadFailed);
+        Assert.Equal(["表"], database.Children.Select(c => c.Name));
+        Assert.Contains("已重新加载 main", vm.Status);
+    }
+
+    [Fact]
     public async Task Schema_level_is_inserted_when_the_dialect_reports_schemas()
     {
         using var db = new TempSqliteDatabase();

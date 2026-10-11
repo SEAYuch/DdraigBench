@@ -11,6 +11,7 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
 {
     private readonly Func<ConnectionTreeNodeViewModel, Task>? _loadChildren;
     private bool _loaded;
+    private bool _loadFailed;
     private bool _isExpanded;
     private bool _isSelected;
     private string _filter = string.Empty;
@@ -63,6 +64,16 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
     public bool HasVisibleChildren => VisibleChildren.Count > 0 || (!_loaded && _loadChildren is not null);
 
     /// <summary>
+    /// 上一次子节点加载是否失败（M9，2026-10-11）。失败时树右键菜单给出「重试加载」入口；
+    /// 没有它的话节点会被记成"已加载且为空"，用户既看不到对象也无法重试。
+    /// </summary>
+    public bool LoadFailed
+    {
+        get => _loadFailed;
+        private set => this.RaiseAndSetIfChanged(ref _loadFailed, value);
+    }
+
+    /// <summary>
     /// 所属**容器**：库级对象是库名，PostgreSQL 的模式级对象是模式名（M5-2）。
     /// 之所以不叫 Database，是因为 PG 下对象查询的入参是模式，两者混用会把 DDL 预览的库名传错。
     /// </summary>
@@ -81,12 +92,39 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
             if (!wasExpanded && value && !_loaded)
             {
                 _loaded = true;
+                LoadFailed = false;
                 if (_loadChildren is not null)
                 {
                     _ = _loadChildren(this);
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// 子节点加载失败时由 loader 的 catch 调用（M9）：撤销「已加载」标记并丢掉失败前已塞进去的半个子树，
+    /// 这样再次展开（或点「重试加载」）会真的重跑 loader，而不是把失败当成"加载完成、结果为空"。
+    /// </summary>
+    public void ReportLoadFailure()
+    {
+        _loaded = false;
+        LoadFailed = true;
+        Children.Clear();
+        this.RaisePropertyChanged(nameof(HasVisibleChildren));
+    }
+
+    /// <summary>强制重新加载子节点（M9）：供树右键「重试加载」调用；loader 内部自己收敛异常。</summary>
+    public Task ReloadAsync()
+    {
+        if (_loadChildren is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        _loaded = true;
+        LoadFailed = false;
+        Children.Clear();
+        return _loadChildren(this);
     }
 
     public bool IsSelected

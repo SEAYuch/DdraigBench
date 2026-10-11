@@ -66,6 +66,8 @@
                 </Border>
                 <DataGrid Grid.Row="1" Margin="0" ItemsSource="{Binding Rows}"
                           controls:ResultColumns.Headers="{Binding Columns}"
+                          controls:ResultColumns.Cells="{Binding Rows}"
+                          controls:ResultColumns.Sort="{Binding SortCommand}"
                           AutoGenerateColumns="False" IsReadOnly="True" CanUserSortColumns="False" />
                 <Border Grid.Row="2" Background="{DynamicResource WorkbenchSubtleBrush}" BorderBrush="{DynamicResource WorkbenchBorderBrush}" BorderThickness="0,1,0,0" Padding="10,5">
                     <Grid ColumnDefinitions="*,Auto">

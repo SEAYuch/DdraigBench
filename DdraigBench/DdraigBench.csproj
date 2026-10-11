@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <OutputType>WinExe</OutputType>
         <TargetFramework>net10.0</TargetFramework>
@@ -8,7 +8,6 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <Folder Include="Models\"/>
         <AvaloniaResource Include="Assets\**"/>
     </ItemGroup>
 
@@ -30,7 +29,6 @@
         <PackageReference Include="FreeSql.Provider.MySqlConnector" Version="3.5.311" />
         <PackageReference Include="FreeSql.Provider.PostgreSQL" Version="3.5.311" />
         <PackageReference Include="ReactiveUI.Avalonia" Version="12.1.6" />
-        <PackageReference Include="ReactiveUI.Avalonia.Autofac" Version="12.1.6" />
     </ItemGroup>
 
     <ItemGroup>

@@ -102,6 +102,57 @@ internal sealed class ScriptedMetadataExplorer : IMetadataExplorer
     }
 }
 
+/// <summary>
+/// 前 N 次对象查询失败、之后交给可编排替身的元数据探查器：
+/// 验证「展开失败后节点仍可重试，且失败前塞进去的半个子树会被清掉」（M9，2026-10-11）。
+/// </summary>
+internal sealed class FlakyMetadataExplorer : IMetadataExplorer
+{
+    private readonly ScriptedMetadataExplorer _inner;
+    private readonly DbObjectKind? _failOnKind;
+    private int _failuresLeft;
+
+    public FlakyMetadataExplorer(
+        int failures = 1,
+        DbObjectKind? failOnKind = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? tables = null)
+    {
+        _failuresLeft = failures;
+        _failOnKind = failOnKind;
+        _inner = new ScriptedMetadataExplorer
+        {
+            Databases = ["main"],
+            Tables = tables ?? new Dictionary<string, IReadOnlyList<string>> { ["main"] = ["t1"] },
+        };
+    }
+
+    public int ObjectQueryCount { get; private set; }
+
+    public Task<IReadOnlyList<string>> GetDatabasesAsync(DbSession session, CancellationToken ct = default) =>
+        _inner.GetDatabasesAsync(session, ct);
+
+    public Task<IReadOnlyList<DbObjectInfo>> GetObjectsAsync(
+        DbSession session, string database, DbObjectKind kind, CancellationToken ct = default)
+    {
+        ObjectQueryCount++;
+        if (_failuresLeft > 0 && (_failOnKind is null || _failOnKind == kind))
+        {
+            _failuresLeft--;
+            return Task.FromException<IReadOnlyList<DbObjectInfo>>(new InvalidOperationException("元数据暂时不可用"));
+        }
+
+        return _inner.GetObjectsAsync(session, database, kind, ct);
+    }
+
+    public Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        _inner.GetColumnsAsync(session, database, table, ct);
+
+    public Task<string?> GetDdlAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        _inner.GetDdlAsync(session, database, table, ct);
+}
+
 /// <summary>元数据探查器替身：对象查询一律抛异常，用于验证「展开失败只写状态、不崩树」。</summary>
 internal sealed class ThrowingMetadataExplorer : IMetadataExplorer
 {

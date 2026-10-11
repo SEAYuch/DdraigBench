@@ -68,9 +68,9 @@ public sealed class MainViewModel : ViewModelBase
         PreviewSelectedDdlCommand = ReactiveCommand.CreateFromTask(() => PreviewDdlAsync(SelectedNode));
         OpenDataCommand = ReactiveCommand.CreateFromTask<ConnectionTreeNodeViewModel>(OpenDataAsync);
         OpenSelectedDataCommand = ReactiveCommand.CreateFromTask(() => OpenDataAsync(SelectedNode));
+        RetryLoadCommand = ReactiveCommand.CreateFromTask<ConnectionTreeNodeViewModel>(RetryLoadAsync);
         RefreshSelectedDataCommand = ReactiveCommand.CreateFromTask(RefreshSelectedDataAsync);
         ToggleNavigatorCommand = ReactiveCommand.Create(() => IsNavigatorVisible = !IsNavigatorVisible);
-        SetThemeCommand = ReactiveCommand.CreateFromTask<ThemeMode>(SetThemeAsync);
         Databases.CollectionChanged += (_, e) =>
         {
             if (e.OldItems is not null)
@@ -120,11 +120,12 @@ public sealed class MainViewModel : ViewModelBase
 
     public ICommand OpenSelectedDataCommand { get; }
 
+    /// <summary>树节点展开失败后的「重试加载」（M9，2026-10-11）。</summary>
+    public ICommand RetryLoadCommand { get; }
+
     public ICommand RefreshSelectedDataCommand { get; }
 
     public ICommand ToggleNavigatorCommand { get; }
-
-    public ICommand SetThemeCommand { get; }
 
     public IReadOnlyList<ThemeMode> ThemeModes { get; } = Enum.GetValues<ThemeMode>();
 
@@ -635,6 +636,25 @@ public sealed class MainViewModel : ViewModelBase
 
     public Task PreviewDdlAsync() => PreviewDdlAsync(SelectedNode);
 
+    /// <summary>
+    /// 重新加载一个树节点的子项（M9，2026-10-11）：展开是 fire-and-forget，失败后节点会被记成"已加载且为空"，
+    /// 用户既看不到对象也没有入口。这里由树右键「重试加载」调用，失败信息照旧收敛进状态栏。
+    /// </summary>
+    public async Task RetryLoadAsync(ConnectionTreeNodeViewModel? node)
+    {
+        if (node is null)
+        {
+            return;
+        }
+
+        Status = $"正在重新加载 {node.Name}…";
+        await node.ReloadAsync();
+        if (!node.LoadFailed)
+        {
+            Status = $"已重新加载 {node.Name}";
+        }
+    }
+
     public async Task PreviewDdlAsync(ConnectionTreeNodeViewModel? selectedNode)
     {
         if (_session is null || selectedNode is not { Container: not null, Kind: not null } node
@@ -697,6 +717,7 @@ public sealed class MainViewModel : ViewModelBase
                 // 展开是 fire-and-forget（见 ConnectionTreeNodeViewModel），异常必须就地收敛成状态，
                 // 否则会成为未观察的任务异常、静默吞掉。
                 Status = $"展开 {database} 失败：{ex.Message}";
+                node.ReportLoadFailure();
             }
         }, database);
 
@@ -716,6 +737,7 @@ public sealed class MainViewModel : ViewModelBase
             catch (Exception ex)
             {
                 Status = $"展开模式 {schema} 失败：{ex.Message}";
+                node.ReportLoadFailure();
             }
         }, schema);
 
@@ -782,6 +804,7 @@ public sealed class MainViewModel : ViewModelBase
             catch (Exception ex)
             {
                 Status = $"读取 {name} 的列失败：{ex.Message}";
+                node.ReportLoadFailure();
             }
         }, container);
 }

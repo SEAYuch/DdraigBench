@@ -16,7 +16,8 @@ public sealed class ExportDialogViewModelTests
         var vm = new ExportDialogViewModel(ExportFormat.Csv, new StubFilePicker());
 
         Assert.False(vm.IsInsert);
-        Assert.Equal("export.csv", vm.FilePath);
+        Assert.True(Path.IsPathRooted(vm.FilePath));
+        Assert.Equal("export.csv", Path.GetFileName(vm.FilePath));
         Assert.True(vm.CanConfirm);
 
         ExportTarget? closed = null;
@@ -33,7 +34,8 @@ public sealed class ExportDialogViewModelTests
         var vm = new ExportDialogViewModel(ExportFormat.Insert, new StubFilePicker());
 
         Assert.True(vm.IsInsert);
-        Assert.Equal("export.sql", vm.FilePath);
+        Assert.True(Path.IsPathRooted(vm.FilePath));
+        Assert.Equal("export.sql", Path.GetFileName(vm.FilePath));
 
         vm.TableName = "   ";
         Assert.False(vm.CanConfirm);
@@ -46,6 +48,18 @@ public sealed class ExportDialogViewModelTests
         vm.Confirm();
 
         Assert.Equal("t1", closed!.TableName);
+    }
+
+    [Fact]
+    public void Default_export_path_is_rooted_so_it_does_not_land_in_the_process_directory()
+    {
+        // C6：裸文件名会被写到进程工作目录（快捷方式启动时可能是 System32 这类不可写的位置），
+        // 用户只会看到"导出失败"，无从判断文件本该落在哪。默认路径必须是绝对路径。
+        var csv = ExportDialogViewModel.DefaultPath("export.csv");
+
+        Assert.True(Path.IsPathRooted(csv));
+        Assert.Equal("export.csv", Path.GetFileName(csv));
+        Assert.NotEqual("export.csv", csv);
     }
 
     [Fact]

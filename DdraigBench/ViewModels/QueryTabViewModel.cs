@@ -33,6 +33,8 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     private bool _isExecuting;
     private readonly string? _browserObjectKey;
     private readonly string? _browserObjectName;
+    private int? _sortColumn;
+    private bool _sortDescending;
 
     public QueryTabViewModel(
         string header,
@@ -57,6 +59,7 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
         ExportCsvCommand = ReactiveCommand.CreateFromTask(ExportCsvAsync);
         ExportInsertCommand = ReactiveCommand.CreateFromTask(ExportInsertAsync);
         RefreshCommand = ReactiveCommand.CreateFromTask(ExecuteAsync);
+        SortCommand = ReactiveCommand.Create<int>(SortBy);
     }
 
     public string Header { get; }
@@ -86,6 +89,12 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     public ICommand ExportCsvCommand { get; }
 
     public ICommand ExportInsertCommand { get; }
+
+    /// <summary>
+    /// 按列排序当前页（参数 = 列序号）。只排手里已有的行——服务端分页下没有整表，
+    /// 所以排序不跨页；再次点同一列切换升降序，换页/重新执行会清掉排序状态。
+    /// </summary>
+    public ICommand SortCommand { get; }
 
     public string Sql
     {
@@ -303,6 +312,7 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
                 HasNextPage = false;
             }
 
+            ResetSort();
             Columns = visible.Columns;
             Rows = visible.Rows;
             Status = BuildStatus(visible, paged is not null);
@@ -487,6 +497,38 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
         {
             this.RaisePropertyChanged(nameof(HasTransaction));
         }
+    }
+
+    /// <summary>
+    /// 排序当前页已读回的行：数字按数值比（"10" &gt; "9"）、日期按时间点比、其余按序数文本比
+    /// （见 <see cref="ResultCellKinds"/>），空值一律排最后。首次点某列升序，再点同一列切换降序。
+    /// </summary>
+    private void SortBy(int index)
+    {
+        if (index < 0 || index >= Columns.Count || Rows.Count == 0)
+        {
+            return;
+        }
+
+        if (_sortColumn == index)
+        {
+            _sortDescending = !_sortDescending;
+        }
+        else
+        {
+            _sortColumn = index;
+            _sortDescending = false;
+        }
+
+        Rows = ResultCellKinds.Sorted(Rows, index, _sortDescending);
+        Status = $"按「{Columns[index]}」{(_sortDescending ? "降序" : "升序")}排序（当前页 {Rows.Count} 行）";
+    }
+
+    /// <summary>新结果到达时清掉排序状态——排序只对到达时的那一页有效，翻页后必须重来。</summary>
+    private void ResetSort()
+    {
+        _sortColumn = null;
+        _sortDescending = false;
     }
 
     private string BuildStatus(QueryResult result, bool paged)

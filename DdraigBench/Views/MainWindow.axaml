@@ -43,6 +43,7 @@
         <ContextMenu x:Key="ObjectContextMenu">
             <MenuItem Header="查看数据" Command="{Binding #RootWindow.DataContext.OpenDataCommand}" CommandParameter="{Binding}" IsVisible="{ReflectionBinding CanOpenData}" />
             <MenuItem Header="预览 DDL" Command="{Binding #RootWindow.DataContext.PreviewDdlCommand}" CommandParameter="{Binding}" IsVisible="{ReflectionBinding CanPreviewDdl}" />
+            <MenuItem Header="重试加载" Command="{Binding #RootWindow.DataContext.RetryLoadCommand}" CommandParameter="{Binding}" IsVisible="{ReflectionBinding LoadFailed}" />
         </ContextMenu>
     </Window.Resources>
 
@@ -137,9 +138,13 @@
                     IsVisible="{Binding IsNavigatorVisible}">
                 <Grid RowDefinitions="Auto,*,Auto,Auto,*">
                     <Border Classes="section-header" CornerRadius="5,5,0,0" BorderBrush="{DynamicResource WorkbenchBorderBrush}" BorderThickness="0,0,0,1">
-                        <Grid ColumnDefinitions="*,Auto">
+                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="4">
                             <TextBlock Text="连接" FontWeight="SemiBold" VerticalAlignment="Center" />
-                            <Button Grid.Column="1" Command="{Binding OpenConnectionCommand}" Padding="5,2" ToolTip.Tip="新建连接">
+                            <Button Grid.Column="1" Command="{Binding ForgetSavedConnectionCommand}" IsEnabled="{Binding CanForgetSavedConnection}"
+                                    Padding="5,2" ToolTip.Tip="移除选中的已保存连接">
+                                <ic:FluentIcon Icon="Delete" IconSize="Size16" />
+                            </Button>
+                            <Button Grid.Column="2" Command="{Binding OpenConnectionCommand}" Padding="5,2" ToolTip.Tip="新建连接">
                                 <ic:FluentIcon Icon="Add" IconSize="Size16" />
                             </Button>
                         </Grid>

@@ -9,10 +9,14 @@
     <Application.Styles>
         <sty:FluentAvaloniaTheme PreferSystemTheme="True" PreferUserAccentColor="True" />
         <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+        <!--
+            正文前景色必须设在 Window 上、靠继承链下发，不能写 `Style Selector="TextBlock"`：
+            隐式样式直接落在每个 TextBlock 上，会盖掉强调按钮（Button.accent / Button.primary）
+            自身的前景色——蓝底配深色正文（浅色主题对比度约 2.2:1，A2，2026-10-11 实测）。
+            设在 Window 上时按钮的 Foreground 在继承链上更近，自然胜出。
+        -->
         <Style Selector="Window">
             <Setter Property="FontSize" Value="13" />
-        </Style>
-        <Style Selector="TextBlock">
             <Setter Property="Foreground" Value="{DynamicResource WorkbenchTextBrush}" />
         </Style>
     </Application.Styles>
