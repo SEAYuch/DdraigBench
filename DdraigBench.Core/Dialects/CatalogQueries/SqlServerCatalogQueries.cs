@@ -72,5 +72,10 @@ public sealed class SqlServerCatalogQueries : ICatalogQueries
     public string BuildTableDefinitionQuery(string database, string table) =>
         throw new NotSupportedException("SQL Server 表定义由 FreeSql 元数据重建（DdlGenerator）");
 
+    public bool SupportsTablePartitions => false;
+
+    public string BuildTablePartitionsQuery(string database, string table) =>
+        throw new NotSupportedException("该切片尚未实现 SQL Server 表分区元数据");
+
     private static string UnicodeLiteral(string value) => "N" + Dialect.FormatLiteral(value);
 }

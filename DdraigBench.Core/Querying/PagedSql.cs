@@ -24,6 +24,8 @@ public static class PagedSql
     /// <remarks>
     /// 判定一律走 <see cref="Scan"/>（跳过字符串/引用标识符/注释）：注释里可能出现 <c>LIMIT</c> 字样，
     /// 行注释还会吃到行尾（M1）；顶层分号意味着多语句脚本，包成派生表必然是语法错误（M2）。
+    /// SQL Server 走独立分支：只在顶层 ORDER BY 存在且无 TOP / OPTION / FOR 冲突子句时，
+    /// 直接追加 OFFSET/FETCH；不包派生表，也不制造任意排序。
     /// </remarks>
     public static string? Build(string? sql, ISqlDialect dialect, int pageSize, long offset)
     {
@@ -40,13 +42,15 @@ public static class PagedSql
             return null;
         }
 
-        var scan = Scan(statement);
-        if (!scan.StartsWithQuery || scan.HasTopLevelPaging || scan.MultipleStatements)
+        var scan = Scan(statement, dialect.RequiresTopLevelOrderByForPaging);
+        if (!scan.StartsWithQuery || scan.HasTopLevelPaging || scan.MultipleStatements
+            || (dialect.RequiresTopLevelOrderByForPaging
+                && (!scan.HasTopLevelOrderBy || scan.HasTsqlPagingConflict)))
         {
             return null;
         }
 
-        // 结尾的顶层分号（`SELECT …;`）必须去掉：分号留在派生表里是语法错误
+        // 结尾的顶层分号必须先去掉；保留它会让派生表或 OFFSET/FETCH 后缀变成语法错误。
         var body = scan.LastTopLevelSemicolon >= 0
             ? statement[..scan.LastTopLevelSemicolon].TrimEnd()
             : statement;
@@ -56,27 +60,35 @@ public static class PagedSql
             body = body[..^1].TrimEnd();
         }
 
-        // 语句以行注释结尾时要补一个换行：`-- …` 会吃到行尾，否则会把我们补的右括号一起吞掉
+        // 行尾 -- 注释会吃掉后缀，所以一定补换行。
         var terminator = scan.EndsInLineComment ? "\n" : string.Empty;
+        var paging = dialect.BuildPaging(pageSize, offset);
 
-        return $"SELECT * FROM ({body}{terminator}) AS {dialect.QuoteIdentifier(PageAlias)} {dialect.BuildPaging(pageSize, offset)}";
+        // SQL Server 要求 OFFSET/FETCH 直接跟在带 ORDER BY 的查询后；不能套派生表，
+        // 因为 T-SQL 禁止派生表中的裸 ORDER BY。requires-order 方言因此走直加后缀分支。
+        return dialect.RequiresTopLevelOrderByForPaging
+            ? $"{body}{terminator} {paging}"
+            : $"SELECT * FROM ({body}{terminator}) AS {dialect.QuoteIdentifier(PageAlias)} {paging}";
     }
 
     /// <summary>
-    /// 单遍扫描语句：跳过字符串/引用标识符/注释，得出首词是否为查询、顶层是否已有分页、
-    /// 是否为多语句脚本、最后一个顶层分号的位置，以及语句是否以行注释结尾。
+    /// 单遍扫描语句：跳过字符串/引用标识符/注释，得出首词是否为查询、顶层分页与 ORDER BY、
+    /// 是否含 T-SQL 冲突子句、是否为多语句脚本、最后一个顶层分号的位置，以及行注释收尾状态。
     /// </summary>
     /// <remarks>
     /// 未处理 MySQL 的 <c>#</c> 注释：SQLite/PG 里 <c>#</c> 是普通字符（PG 还当运算符），
     /// 按注释处理反而更危险；代价只是 MySQL 用 <c>#</c> 写注释时可能少翻一页。
     /// </remarks>
-    private static ScanResult Scan(string statement)
+    private static ScanResult Scan(string statement, bool treatBracketIdentifiers)
     {
         var depth = 0;
         var index = 0;
         var firstWordRead = false;
         var startsWithQuery = false;
         var hasTopLevelPaging = false;
+        var hasTopLevelOrderBy = false;
+        var hasTsqlPagingConflict = false;
+        var previousTopLevelWord = string.Empty;
         var lastSemicolon = -1;
         var multipleStatements = false;
         var endsInLineComment = false;
@@ -120,47 +132,93 @@ public static class PagedSql
                 continue;
             }
 
-            if (c is '\'' or '"' or '`')
+            if (c is '\'' or '"' or '`' || (treatBracketIdentifiers && c == '['))
             {
                 firstWordRead = true;
-                index = SkipQuoted(statement, index);
+                previousTopLevelWord = string.Empty;
+                index = c == '[' ? SkipBracketIdentifier(statement, index) : SkipQuoted(statement, index);
                 NoteToken();
                 continue;
             }
 
-            if (!firstWordRead)
+            if (IsWordStart(c))
             {
-                firstWordRead = true;
-                startsWithQuery = MatchesKeyword(statement, index, "SELECT")
-                    || MatchesKeyword(statement, index, "WITH");
+                var start = index++;
+                while (index < statement.Length && IsWordPart(statement[index]))
+                {
+                    index++;
+                }
+
+                var word = statement[start..index];
+                if (!firstWordRead)
+                {
+                    firstWordRead = true;
+                    startsWithQuery = word.Equals("SELECT", StringComparison.OrdinalIgnoreCase)
+                        || word.Equals("WITH", StringComparison.OrdinalIgnoreCase);
+                }
+
+                if (depth == 0)
+                {
+                    if (treatBracketIdentifiers
+                        && (word.Equals("TOP", StringComparison.OrdinalIgnoreCase)
+                            || word.Equals("FOR", StringComparison.OrdinalIgnoreCase)
+                            || word.Equals("OPTION", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        hasTsqlPagingConflict = true;
+                    }
+
+                    if (word.Equals("LIMIT", StringComparison.OrdinalIgnoreCase)
+                        || word.Equals("OFFSET", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasTopLevelPaging = true;
+                    }
+
+                    if (word.Equals("BY", StringComparison.OrdinalIgnoreCase)
+                        && previousTopLevelWord.Equals("ORDER", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasTopLevelOrderBy = true;
+                    }
+
+                    previousTopLevelWord = word;
+                }
+                else
+                {
+                    previousTopLevelWord = string.Empty;
+                }
+
+                NoteToken();
+                continue;
             }
 
             if (c == '(')
             {
                 depth++;
+                previousTopLevelWord = string.Empty;
             }
             else if (c == ')')
             {
                 depth--;
+                previousTopLevelWord = string.Empty;
             }
             else if (c == ';' && depth == 0)
             {
                 lastSemicolon = index;
+                previousTopLevelWord = string.Empty;
                 index++;
                 continue;
             }
-            else if (depth == 0
-                && IsWordBoundary(statement, index)
-                && (MatchesKeyword(statement, index, "LIMIT") || MatchesKeyword(statement, index, "OFFSET")))
+            else if (!char.IsWhiteSpace(c))
             {
-                hasTopLevelPaging = true;
+                previousTopLevelWord = string.Empty;
             }
 
             index++;
             NoteToken();
         }
 
-        return new ScanResult(startsWithQuery, hasTopLevelPaging, multipleStatements, lastSemicolon, endsInLineComment);
+        return new ScanResult(
+            startsWithQuery, hasTopLevelPaging, hasTopLevelOrderBy, hasTsqlPagingConflict,
+            multipleStatements, lastSemicolon, endsInLineComment);
     }
 
     /// <summary>跳过一个字符串/引用标识符（<c>''</c>、<c>""</c>、<c>``</c> 是转义写法），返回其后的下标。</summary>
@@ -193,12 +251,41 @@ public static class PagedSql
     /// 扫描结果。<paramref name="LastTopLevelSemicolon"/> 为 <c>-1</c> 表示没有顶层分号；
     /// <paramref name="EndsInLineComment"/> 为真表示语句以 <c>-- …</c> 行注释收尾。
     /// </summary>
+    private static int SkipBracketIdentifier(string statement, int index)
+    {
+        index++; // '['
+        while (index < statement.Length)
+        {
+            if (statement[index] != ']')
+            {
+                index++;
+                continue;
+            }
+
+            if (index + 1 < statement.Length && statement[index + 1] == ']')
+            {
+                index += 2;
+                continue;
+            }
+
+            return index + 1;
+        }
+
+        return statement.Length;
+    }
+
     private readonly record struct ScanResult(
         bool StartsWithQuery,
         bool HasTopLevelPaging,
+        bool HasTopLevelOrderBy,
+        bool HasTsqlPagingConflict,
         bool MultipleStatements,
         int LastTopLevelSemicolon,
         bool EndsInLineComment);
+
+    private static bool IsWordStart(char value) => char.IsLetter(value) || value == '_';
+
+    private static bool IsWordPart(char value) => char.IsLetterOrDigit(value) || value is '_' or '$';
 
     private static bool IsWordBoundary(string statement, int index)
     {

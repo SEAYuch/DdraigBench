@@ -12,14 +12,15 @@ public sealed class SqlServerDialect : SqlDialectBase
     public override string QuoteIdentifier(string name) => $"[{name.Replace("]", "]]", StringComparison.Ordinal)}]";
 
     /// <summary>
-    /// PagedSql wraps the user statement as a derived table. SQL Server rejects a bare ORDER BY inside
-    /// that derived table unless it is paired with TOP/OFFSET/FOR XML, and stripping it would alter semantics.
-    /// Keep automatic server paging disabled until a T-SQL-aware wrapper is implemented.
+    /// SQL Server OFFSET/FETCH applies directly to the user's top-level ordered query. PagedSql must not
+    /// wrap it as a derived table: that rejects bare ORDER BY or changes its semantics.
     /// </summary>
-    public override bool SupportsServerPaging => false;
+    public override bool SupportsServerPaging => true;
+
+    public override bool RequiresTopLevelOrderByForPaging => true;
 
     public override string BuildPaging(int limit, long offset) =>
-        $"ORDER BY (SELECT 1) OFFSET {offset.ToString(CultureInfo.InvariantCulture)} ROWS " +
+        $"OFFSET {offset.ToString(CultureInfo.InvariantCulture)} ROWS " +
         $"FETCH NEXT {limit.ToString(CultureInfo.InvariantCulture)} ROWS ONLY";
 
     public override string FormatLiteral(object? value) => value is bool boolean

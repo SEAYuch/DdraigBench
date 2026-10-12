@@ -802,10 +802,28 @@ public sealed class MainViewModel : ViewModelBase
                     node.Children.Add(new ConnectionTreeNodeViewModel(
                         $"{column.Name} : {column.DataType}", DbObjectKind.Column));
                 }
+
+                if (kind == DbObjectKind.Table)
+                {
+                    foreach (var partition in await _metadata.GetPartitionsAsync(session, container, name))
+                    {
+                        if (!ReferenceEquals(_session, session))
+                        {
+                            return;
+                        }
+
+                        var description = string.IsNullOrWhiteSpace(partition.Description)
+                            ? string.Empty
+                            : $" < {partition.Description}";
+                        node.Children.Add(new ConnectionTreeNodeViewModel(
+                            $"{partition.Name} ({partition.Method}: {partition.Expression}{description})",
+                            DbObjectKind.Partition));
+                    }
+                }
             }
             catch (Exception ex)
             {
-                Status = $"读取 {name} 的列失败：{ex.Message}";
+                Status = $"读取 {name} 的列/分区失败：{ex.Message}";
                 node.ReportLoadFailure();
             }
         }, container);

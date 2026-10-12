@@ -49,6 +49,7 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
         DbObjectKind.StoredProcedure => "SP",
         DbObjectKind.Function => "FN",
         DbObjectKind.Event => "EV",
+        DbObjectKind.Partition => "P",
         DbObjectKind.Column => "C",
         _ => string.Empty,
     });

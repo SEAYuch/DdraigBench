@@ -141,6 +141,28 @@ public sealed class MultiDialectIntegrationTests
             session.Fsql.Ado.ExecuteNonQuery("DROP TABLE IF EXISTS ddb_probe_table");
         }
 
+        // M5-3：MySQL 分区是表的子结构，不单独伪装成库级 DbObjectKind；靶机验证表节点的分区子查询。
+        if (dataType == DataType.MySql)
+        {
+            session.Fsql.Ado.ExecuteNonQuery(
+                "CREATE TABLE ddb_probe_partitioned (id INT NOT NULL, note VARCHAR(32)) "
+                + "ENGINE=InnoDB PARTITION BY RANGE (id) "
+                + "(PARTITION p0 VALUES LESS THAN (10), PARTITION pmax VALUES LESS THAN MAXVALUE)");
+            try
+            {
+                var partitions = await explorer.GetPartitionsAsync(session, schema!, "ddb_probe_partitioned", ct);
+                Assert.Equal(new[] { "p0", "pmax" }, partitions.Select(p => p.Name));
+                Assert.All(partitions, p => Assert.Equal("RANGE", p.Method));
+                // information_schema 保留了原表达式的反引号引用，定义预览需按服务器返回值原样保真
+                Assert.All(partitions, p => Assert.Equal("`id`", p.Expression));
+                Assert.Equal(new[] { "10", "MAXVALUE" }, partitions.Select(p => p.Description));
+            }
+            finally
+            {
+                session.Fsql.Ado.ExecuteNonQuery("DROP TABLE IF EXISTS ddb_probe_partitioned");
+            }
+        }
+
         // 视图定义：建一个探测视图取真实定义，结束即删
         session.Fsql.Ado.ExecuteNonQuery("CREATE OR REPLACE VIEW ddb_probe_view AS SELECT 1 AS n");
         try
@@ -519,11 +541,25 @@ public sealed class MultiDialectIntegrationTests
                 "CREATE TABLE dbo.ddb_probe_table (id int NOT NULL PRIMARY KEY, name nvarchar(40) NULL)");
             try
             {
+                session.Fsql.Ado.ExecuteNonQuery("INSERT INTO dbo.ddb_probe_table (id, name) VALUES (1, N'a'), (2, N'b'), (3, N'c')");
+                var dialect = SqlDialects.Get(dataType);
+                Assert.Null(PagedSql.Build("SELECT id, name FROM dbo.ddb_probe_table", dialect, 2, 0));
+
                 var orderedSql = "SELECT id, name FROM dbo.ddb_probe_table ORDER BY id";
-                Assert.Null(PagedSql.Build(orderedSql, SqlDialects.Get(dataType), 2, 0));
-                var orderedResult = await new QueryRunner(session.Fsql).ExecuteAsync(orderedSql, maxRows: 10);
-                Assert.Null(orderedResult.Error); // 原始 ORDER BY 直通执行，SQL Server 不使用派生表自动分页
+                var pagedSql = PagedSql.Build(orderedSql, dialect, 2, 0);
+                Assert.Equal(
+                    "SELECT id, name FROM dbo.ddb_probe_table ORDER BY id OFFSET 0 ROWS FETCH NEXT 2 ROWS ONLY",
+                    pagedSql);
+                var orderedResult = await new QueryRunner(session.Fsql).ExecuteAsync(pagedSql!, maxRows: 10);
+                Assert.Null(orderedResult.Error);
                 Assert.Equal("name", orderedResult.Columns[1]);
+                Assert.Equal(new[] { 1, 2 }, orderedResult.Rows.Select(row => Convert.ToInt32(row[0])));
+
+                var secondPageSql = PagedSql.Build(orderedSql, SqlDialects.Get(dataType), 2, 2);
+                Assert.NotNull(secondPageSql);
+                var secondPage = await new QueryRunner(session.Fsql).ExecuteAsync(secondPageSql!, maxRows: 10);
+                Assert.Null(secondPage.Error);
+                Assert.Equal(new[] { 3 }, secondPage.Rows.Select(row => Convert.ToInt32(row[0])));
 
                 // SQL Server 加了模式层后对象容器是模式名（AGENTS.md §4），探测表建在 dbo 下
                 var ddl = await explorer.GetDdlAsync(

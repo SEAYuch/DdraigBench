@@ -108,6 +108,18 @@ public sealed class MetadataExplorerTests
     }
 
     [Fact]
+    public async Task Unsupported_dialect_returns_no_table_partitions()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        await using var session = CreateSession(db, factory);
+        var explorer = new FreeSqlMetadataExplorer();
+
+        Assert.Empty(await explorer.GetPartitionsAsync(
+            session, "main", "t1", TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Kind_outside_the_database_level_throws()
     {
         using var db = new TempSqliteDatabase();

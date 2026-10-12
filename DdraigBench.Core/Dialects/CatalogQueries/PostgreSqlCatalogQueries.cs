@@ -106,6 +106,11 @@ public sealed class PostgreSqlCatalogQueries : ICatalogQueries
     public string BuildTableDefinitionQuery(string database, string table) =>
         throw new NotSupportedException("PostgreSQL 不保存原始建表语句，表 DDL 由元数据重建（DdlGenerator）");
 
+    public bool SupportsTablePartitions => false;
+
+    public string BuildTablePartitionsQuery(string database, string table) =>
+        throw new NotSupportedException("该切片尚未实现 PostgreSQL 表分区元数据");
+
     private static string QualifiedName(string database, string name) =>
         $"{Dialect.QuoteIdentifier(database)}.{Dialect.QuoteIdentifier(name)}";
 

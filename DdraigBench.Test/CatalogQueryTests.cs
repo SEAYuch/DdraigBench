@@ -362,8 +362,23 @@ public sealed class CatalogQueryTests
             "SHOW CREATE TABLE `shop`.`a``b`",
             MySqlCatalogQueries.Instance.BuildTableDefinitionQuery("shop", "a`b"));
 
+        Assert.True(MySqlCatalogQueries.Instance.SupportsTablePartitions);
+        var partitions = MySqlCatalogQueries.Instance.BuildTablePartitionsQuery("shop", "orders");
+        Assert.Contains("information_schema.PARTITIONS", partitions);
+        Assert.Contains("TABLE_SCHEMA = 'shop'", partitions);
+        Assert.Contains("TABLE_NAME = 'orders'", partitions);
+        Assert.Contains("PARTITION_NAME IS NOT NULL", partitions);
+        Assert.Contains("AS name", partitions);
+        Assert.Contains("AS method", partitions);
+        Assert.Contains("AS expression", partitions);
+        Assert.Contains("AS description", partitions);
+        Assert.Contains("ORDER BY PARTITION_ORDINAL_POSITION", partitions);
+
         // PG 系统表里只存解析后的结构，没有原始建表语句
         Assert.False(PostgreSqlCatalogQueries.Instance.SupportsTableDefinitions);
+        Assert.False(PostgreSqlCatalogQueries.Instance.SupportsTablePartitions);
+        Assert.Throws<NotSupportedException>(() => SqliteCatalogQueries.Instance.BuildTablePartitionsQuery("main", "t1"));
+        Assert.Throws<NotSupportedException>(() => PostgreSqlCatalogQueries.Instance.BuildTablePartitionsQuery("public", "t1"));
         Assert.Throws<NotSupportedException>(
             () => PostgreSqlCatalogQueries.Instance.BuildTableDefinitionQuery("public", "t1"));
     }

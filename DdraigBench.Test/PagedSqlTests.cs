@@ -162,6 +162,29 @@ public sealed class PagedSqlTests
     }
 
     [Fact]
+    public void SqlServer_paging_appends_offset_fetch_only_to_top_level_ordered_queries()
+    {
+        var sql = PagedSql.Build("SELECT id FROM dbo.t ORDER BY id", SqlServerDialect.Instance, 25, 50);
+
+        Assert.Equal("SELECT id FROM dbo.t ORDER BY id OFFSET 50 ROWS FETCH NEXT 25 ROWS ONLY", sql);
+        Assert.Null(PagedSql.Build("SELECT id FROM dbo.t", SqlServerDialect.Instance, 25, 50));
+        Assert.Null(PagedSql.Build("SELECT id FROM dbo.t ORDER BY id LIMIT 10", SqlServerDialect.Instance, 25, 50));
+        Assert.Null(PagedSql.Build("SELECT id FROM dbo.t ORDER BY id; SELECT 2", SqlServerDialect.Instance, 25, 50));
+    }
+
+    [Fact]
+    public void SqlServer_order_by_in_literals_nested_queries_and_bracket_identifiers_does_not_enable_paging()
+    {
+        Assert.Null(PagedSql.Build("SELECT '[ORDER BY]' AS note FROM dbo.t", SqlServerDialect.Instance, 10, 0));
+        Assert.Null(PagedSql.Build("SELECT * FROM (SELECT id FROM dbo.t ORDER BY id) q", SqlServerDialect.Instance, 10, 0));
+        Assert.Null(PagedSql.Build("SELECT [ORDER BY] FROM dbo.t", SqlServerDialect.Instance, 10, 0));
+        Assert.Null(PagedSql.Build("SELECT [a]]ORDER BY]] FROM dbo.t", SqlServerDialect.Instance, 10, 0));
+        Assert.Null(PagedSql.Build("SELECT TOP (10) id FROM dbo.t ORDER BY id", SqlServerDialect.Instance, 10, 0));
+        Assert.Null(PagedSql.Build("SELECT id FROM dbo.t ORDER BY id OPTION (RECOMPILE)", SqlServerDialect.Instance, 10, 0));
+        Assert.Null(PagedSql.Build("SELECT id FROM dbo.t ORDER BY id FOR XML PATH('x')", SqlServerDialect.Instance, 10, 0));
+    }
+
+    [Fact]
     public void Throws_when_dialect_is_missing()
     {
         Assert.Throws<ArgumentNullException>(() => PagedSql.Build("SELECT 1", null!, 10, 0));

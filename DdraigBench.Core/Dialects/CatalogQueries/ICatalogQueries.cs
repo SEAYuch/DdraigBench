@@ -66,4 +66,10 @@ public interface ICatalogQueries
 
     /// <summary>表定义 SQL（单列单行，值为完整建表语句）。</summary>
     string BuildTableDefinitionQuery(string database, string table);
+
+    /// <summary>该方言是否能列出表级分区子结构（不是容器级对象 kind）。</summary>
+    bool SupportsTablePartitions { get; }
+
+    /// <summary>表级分区清单，列名契约：name、method、expression、description。</summary>
+    string BuildTablePartitionsQuery(string database, string table);
 }

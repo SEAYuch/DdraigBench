@@ -47,6 +47,11 @@ public sealed class SqliteCatalogQueries : ICatalogQueries
         $"SELECT sql AS definition FROM {Master(database)} "
         + $"WHERE type = 'table' AND name = {Dialect.FormatLiteral(table)}";
 
+    public bool SupportsTablePartitions => false;
+
+    public string BuildTablePartitionsQuery(string database, string table) =>
+        throw new NotSupportedException("SQLite 不提供表分区元数据");
+
     /// <summary>限定到某个附加库：<c>"main".sqlite_master</c>。</summary>
     private static string Master(string database) =>
         $"{Dialect.QuoteIdentifier(database)}.sqlite_master";

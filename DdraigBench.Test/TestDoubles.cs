@@ -70,6 +70,10 @@ internal sealed class ScriptedMetadataExplorer : IMetadataExplorer
     public IReadOnlyDictionary<string, IReadOnlyList<string>> Views { get; init; } =
         new Dictionary<string, IReadOnlyList<string>>();
 
+    /// <summary>分区键为「container.table」，例如 <c>public.orders</c>。</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<DbPartitionInfo>> Partitions { get; init; } =
+        new Dictionary<string, IReadOnlyList<DbPartitionInfo>>();
+
     public List<(string Container, string Name)> DdlRequests { get; } = [];
 
     public Task<IReadOnlyList<string>> GetDatabasesAsync(DbSession session, CancellationToken ct = default) =>
@@ -93,6 +97,12 @@ internal sealed class ScriptedMetadataExplorer : IMetadataExplorer
     public Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(
         DbSession session, string database, string table, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<DbColumnInfo>>([]);
+
+    public Task<IReadOnlyList<DbPartitionInfo>> GetPartitionsAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        Task.FromResult(Partitions.TryGetValue($"{database}.{table}", out var partitions)
+            ? partitions
+            : (IReadOnlyList<DbPartitionInfo>)[]);
 
     public Task<string?> GetDdlAsync(
         DbSession session, string database, string table, CancellationToken ct = default)
@@ -148,6 +158,10 @@ internal sealed class FlakyMetadataExplorer : IMetadataExplorer
         DbSession session, string database, string table, CancellationToken ct = default) =>
         _inner.GetColumnsAsync(session, database, table, ct);
 
+    public Task<IReadOnlyList<DbPartitionInfo>> GetPartitionsAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        _inner.GetPartitionsAsync(session, database, table, ct);
+
     public Task<string?> GetDdlAsync(
         DbSession session, string database, string table, CancellationToken ct = default) =>
         _inner.GetDdlAsync(session, database, table, ct);
@@ -166,6 +180,10 @@ internal sealed class ThrowingMetadataExplorer : IMetadataExplorer
     public Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(
         DbSession session, string database, string table, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<DbColumnInfo>>([]);
+
+    public Task<IReadOnlyList<DbPartitionInfo>> GetPartitionsAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<DbPartitionInfo>>([]);
 
     public Task<string?> GetDdlAsync(
         DbSession session, string database, string table, CancellationToken ct = default) =>
@@ -204,6 +222,10 @@ internal sealed class GatedMetadataExplorer : IMetadataExplorer
     public Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(
         DbSession session, string database, string table, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<DbColumnInfo>>([]);
+
+    public Task<IReadOnlyList<DbPartitionInfo>> GetPartitionsAsync(
+        DbSession session, string database, string table, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<DbPartitionInfo>>([]);
 
     public Task<string?> GetDdlAsync(
         DbSession session, string database, string table, CancellationToken ct = default) =>

@@ -160,6 +160,19 @@ public sealed class MySqlCatalogQueries : ICatalogQueries
     public string BuildTableDefinitionQuery(string database, string table) =>
         $"SHOW CREATE TABLE {QualifiedName(database, table)}";
 
+    public bool SupportsTablePartitions => true;
+
+    public string BuildTablePartitionsQuery(string database, string table) =>
+        "SELECT CASE WHEN SUBPARTITION_NAME IS NULL THEN PARTITION_NAME "
+        + "ELSE CONCAT(PARTITION_NAME, '/', SUBPARTITION_NAME) END AS name, "
+        + "COALESCE(SUBPARTITION_METHOD, PARTITION_METHOD) AS method, "
+        + "COALESCE(SUBPARTITION_EXPRESSION, PARTITION_EXPRESSION) AS expression, "
+        + "PARTITION_DESCRIPTION AS description "
+        + "FROM information_schema.PARTITIONS "
+        + $"WHERE TABLE_SCHEMA = {Dialect.FormatLiteral(database)} "
+        + $"AND TABLE_NAME = {Dialect.FormatLiteral(table)} AND PARTITION_NAME IS NOT NULL "
+        + "ORDER BY PARTITION_ORDINAL_POSITION, SUBPARTITION_ORDINAL_POSITION";
+
     private static string QualifiedName(string database, string name) =>
         $"{Dialect.QuoteIdentifier(database)}.{Dialect.QuoteIdentifier(name)}";
 

@@ -7,8 +7,11 @@ public interface ISqlDialect
     /// <summary>引用标识符（表名 / 列名）。</summary>
     string QuoteIdentifier(string name);
 
-    /// <summary>该方言当前是否允许自动包裹查询进行服务端分页。</summary>
+    /// <summary>该方言当前是否允许自动服务端分页（可能还受 SQL 形状条件约束）。</summary>
     bool SupportsServerPaging { get; }
+
+    /// <summary>该方言的 OFFSET/FETCH 语法是否要求原查询有顶层 ORDER BY。</summary>
+    bool RequiresTopLevelOrderByForPaging { get; }
 
     /// <summary>生成分页子句。</summary>
     string BuildPaging(int limit, long offset);

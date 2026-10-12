@@ -68,6 +68,38 @@ internal static class CatalogQueryExecutor
     /// （<c>Create Table</c> / <c>Create View</c>），列名不能写死在 SQL 里。
     /// 命中多列时抛错而非猜：猜错会把列名当 DDL 返回，用户复制执行必炸。
     /// </summary>
+    internal static async Task<IReadOnlyList<DbPartitionInfo>> ReadPartitionsAsync(
+        DbSession session, string sql, CancellationToken ct)
+    {
+        var result = await RunAsync(session, sql, ct);
+        var nameIndex = IndexOf(result.Columns, "name");
+        var methodIndex = IndexOf(result.Columns, "method");
+        var expressionIndex = IndexOf(result.Columns, "expression");
+        var descriptionIndex = IndexOf(result.Columns, "description");
+        if (nameIndex < 0 || methodIndex < 0 || expressionIndex < 0)
+        {
+            throw new InvalidOperationException($"分区清单必须返回 name/method/expression 列（SQL：{sql}）");
+        }
+
+        var partitions = new List<DbPartitionInfo>(result.Rows.Count);
+        foreach (var row in result.Rows)
+        {
+            var name = AsString(row[nameIndex]);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            partitions.Add(new DbPartitionInfo(
+                name,
+                AsString(row[methodIndex]) ?? string.Empty,
+                AsString(row[expressionIndex]) ?? string.Empty,
+                descriptionIndex >= 0 ? AsString(row[descriptionIndex]) : null));
+        }
+
+        return partitions;
+    }
+
     internal static async Task<string?> ReadDefinitionAsync(DbSession session, string sql, CancellationToken ct)
     {
         var result = await RunAsync(session, sql, ct);

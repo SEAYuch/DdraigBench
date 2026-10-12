@@ -26,4 +26,7 @@ public enum DbObjectKind
     /// （<c>information_schema.EVENTS</c>，由事件调度器按时间表执行）；其余方言返回空集，树也就不加这一组。
     /// </summary>
     Event,
+
+    /// <summary>表节点下的分区子节点（M5-3；不是容器级对象集合，不能从 GetObjectsAsync 查询）。</summary>
+    Partition,
 }

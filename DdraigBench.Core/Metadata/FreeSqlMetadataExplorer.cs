@@ -50,13 +50,29 @@ public sealed class FreeSqlMetadataExplorer : IMetadataExplorer
         {
             DbObjectKind.Table => TablesAndViewsAsync(session, database, DbTableType.TABLE, ct),
             DbObjectKind.View => TablesAndViewsAsync(session, database, DbTableType.VIEW, ct),
-            // Schema = 库内的模式层（PG / SQL Server 有；MySQL 的库即模式、SQLite 无模式 → 空集）
+            // Schema = 库内的模式层（PG / SQL Server 有）；Event 是 MySQL/MariaDB 的库级对象。
+            // 两者都由 Supports(kind) 控制，方言不支持时返回空集。
             DbObjectKind.Schema or DbObjectKind.Trigger or DbObjectKind.Function
                 or DbObjectKind.StoredProcedure or DbObjectKind.Event
                 => CatalogObjectsAsync(session, database, kind, ct),
+            DbObjectKind.Partition => throw new NotSupportedException(
+                "Partition 是表级子结构，请走 GetPartitionsAsync，而不是容器级 GetObjectsAsync"),
             _ => throw new NotSupportedException(
                 $"{kind} 不是「容器级对象集合」：列请走 GetColumnsAsync，索引/外键挂在表级元数据（DbTableInfo.IndexesDict / ForeignsDict）上"),
         };
+
+    public async Task<IReadOnlyList<DbPartitionInfo>> GetPartitionsAsync(
+        DbSession session, string container, string table, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!CatalogQuerySets.TryGet(session.Profile.DataType, out var catalog) || !catalog.SupportsTablePartitions)
+        {
+            return Array.Empty<DbPartitionInfo>();
+        }
+
+        var sql = catalog.BuildTablePartitionsQuery(container, table);
+        return await CatalogQueryExecutor.ReadPartitionsAsync(session, sql, ct);
+    }
 
     public async Task<IReadOnlyList<DbColumnInfo>> GetColumnsAsync(
         DbSession session, string container, string table, CancellationToken ct = default)

@@ -76,14 +76,18 @@ public sealed class SqlDialectTests
     }
 
     [Fact]
-    public void SqlServer_uses_tsql_literals_and_disables_unsafe_automatic_paging()
+    public void SqlServer_uses_tsql_literals_and_requires_ordered_direct_paging()
     {
         var dialect = SqlDialects.Get(DataType.SqlServer);
 
         Assert.Equal("1", dialect.FormatLiteral(true));
         Assert.Equal("0", dialect.FormatLiteral(false));
         Assert.Equal("0x6869", dialect.FormatLiteral(new byte[] { 0x68, 0x69 }));
-        Assert.False(dialect.SupportsServerPaging);
-        Assert.Null(PagedSql.Build("SELECT id FROM t ORDER BY id", dialect, 51, 0));
+        Assert.True(dialect.SupportsServerPaging);
+        Assert.True(dialect.RequiresTopLevelOrderByForPaging);
+        Assert.Null(PagedSql.Build("SELECT id FROM t", dialect, 51, 0));
+        Assert.Equal(
+            "SELECT id FROM t ORDER BY id OFFSET 0 ROWS FETCH NEXT 51 ROWS ONLY",
+            PagedSql.Build("SELECT id FROM t ORDER BY id", dialect, 51, 0));
     }
 }

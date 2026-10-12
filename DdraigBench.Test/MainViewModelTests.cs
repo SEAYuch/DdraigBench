@@ -645,6 +645,46 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task Expanding_partitioned_table_shows_partitions_as_table_children()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery("CREATE TABLE orders (id INTEGER PRIMARY KEY)");
+        var explorer = new ScriptedMetadataExplorer
+        {
+            Databases = ["main"],
+            Tables = new Dictionary<string, IReadOnlyList<string>> { ["main"] = ["orders"] },
+            Partitions = new Dictionary<string, IReadOnlyList<DbPartitionInfo>>
+            {
+                ["main.orders"] =
+                [
+                    new DbPartitionInfo("p2024", "RANGE", "year(created)", "2025"),
+                    new DbPartitionInfo("pmax", "RANGE", "year(created)", "MAXVALUE"),
+                ],
+            },
+        };
+        var vm = new MainViewModel(
+            new StubConnectionDialog(SqliteProfile(db)), new FreeSqlFactory(), explorer,
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()));
+        await vm.OpenConnectionAsync();
+
+        var database = Assert.Single(vm.Databases);
+        database.IsExpanded = true;
+        await WaitUntilAsync(() => database.Children.Count > 0);
+        var table = Assert.Single(Assert.Single(database.Children).Children);
+        table.IsExpanded = true;
+        await WaitUntilAsync(() => table.Children.Count > 0);
+
+        Assert.Equal(2, table.Children.Count);
+        Assert.Contains(table.Children, p => p.Name == "p2024 (RANGE: year(created) < 2025)");
+        Assert.Contains(table.Children, p => p.Name == "pmax (RANGE: year(created) < MAXVALUE)");
+        Assert.All(table.Children, p => Assert.Equal(DbObjectKind.Partition, p.Kind));
+        Assert.All(table.Children, p => Assert.False(p.CanOpenData));
+        Assert.All(table.Children, p => Assert.False(p.CanPreviewDdl));
+    }
+
+    [Fact]
     public async Task Opening_table_creates_read_only_paged_browser_and_reuses_it()
     {
         using var db = new TempSqliteDatabase();

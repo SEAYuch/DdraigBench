@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
-[![Tests: 320 total](https://img.shields.io/badge/tests-320%20total-success.svg)]
+[![Tests: 324 total](https://img.shields.io/badge/tests-324%20total-success.svg)]
 
 ---
 
@@ -13,9 +13,9 @@
 | 项 | 状态 |
 |---|---|
 | 构建 | `dotnet build DdraigBench.slnx -c Release` — **零警告零错误** |
-| 测试 | **320 个用例**（离线通道 288 通过 / 32 跳过；接入 MySQL/PG 靶机后 295 通过 / 25 跳过 — 跳过项为无环境用例：SQL Server 靶机、macOS 钥匙串、freedesktop Secret Service、Unix 文件权限） |
+| 测试 | **324 个用例**（离线通道 292 通过 / 32 跳过；接入 MySQL/PG 靶机后 297 通过 / 27 跳过；接入 MySQL/PG/SQL Server 靶机后 301 通过 / 23 跳过 — 剩余跳过项为平台密钥库 / Unix 权限类用例） |
 | 已实现方言 | SQLite、MySQL / MariaDB、PostgreSQL、SQL Server |
-| 里程碑 | M1 闭环 / M2 多方言 / M3 编辑器与会话 / M4 生产力功能 / M5-1 目录查询层 / M5-2 模式层 — **均已落地**（M5-3 元数据缺口仍在） |
+| 里程碑 | M1 闭环 / M2 多方言 / M3 编辑器与会话 / M4 生产力功能 / M5-1 目录查询层 / M5-2 模式层 / **M5-3 元数据完整性 — 已落地并通过靶机验证** |
 
 > 工作台人工验收已通过；截图未入库（见 AGENTS.md §8 的 M1 验收记录）。
 
@@ -36,7 +36,7 @@
 - SQL 编辑器（AvaloniaEdit）：行号、等宽、不换行
 - 执行 / **取消**（长查询可中断）
 - **事务模式**：显式提交 / 回滚，切换连接时自动回滚
-- **真·服务端分页**（M3-5）：SQLite / MySQL / PostgreSQL 查询包成派生表 + `LIMIT/OFFSET`，多取一行判定"有无下一页"；工具条可配每页行数并翻页；结果网格行虚拟化。SQL Server 当前禁用自动服务端分页（派生表内裸 `ORDER BY` 会报错/改变语义），查询仍可执行并受客户端读取上限保护
+- **真·服务端分页**（M3-5）：SQLite / MySQL / PostgreSQL 查询包成派生表 + `LIMIT/OFFSET`，多取一行判定"有无下一页"；工具条可配每页行数并翻页；结果网格行虚拟化。SQL Server 仅对顶层带 `ORDER BY` 的简单 SELECT 直加 `OFFSET/FETCH` 服务端分页（不包派生表）；无序、多语句、已有分页及含 `TOP`/`OPTION`/`FOR` 冲突语句 fail-closed，仍走客户端读取上限
 - 结果集单元格直读无类型行数组（不经绑定引擎）；**列类型感知**：按已读回的值推断列类型，数字与日期右对齐、文本左对齐；二进制列（BLOB）显示为十六进制前缀，超长只截前 32 字节并标注总长，不再显示 `System.Byte[]`
 - **表头点击排序**：按列类型比较（数字按数值、"10" > "9"；日期按时间点；空值一律排最后；同分保持原顺序），再点同一列切换升降序，状态栏显示当前排序
 - **导出默认路径**：默认落在「文档」目录下的 `export.csv` / `export.sql`（绝对路径），不再相对进程工作目录（快捷方式启动时那是 `System32` 之类不可写的位置）
@@ -46,7 +46,7 @@
 - **INSERT 脚本**（标识符引用与字面量按方言渲染，支持每语句多行）
 
 **方言层**（`ISqlDialect`）
-- 标识符引用、分页子句、字面量渲染、自增列定义——SQLite / MySQL / PostgreSQL / SQL Server；SQL Server 目前禁用 `PagedSql` 自动派生表分页
+- 标识符引用、分页子句、字面量渲染、自增列定义——SQLite / MySQL / PostgreSQL / SQL Server；SQL Server 由 `PagedSql` 对带顶层 `ORDER BY` 的简单查询直加 `OFFSET/FETCH`；不使用派生表分页
 
 ## 技术栈
 
@@ -108,7 +108,7 @@ dotnet run   --project DdraigBench                # 启动应用
 
 - **Core 逻辑** → xunit 单测；数据库依赖一律用**临时 SQLite 文件**（不 mock `IFreeSql`，走真连接）
 - **GPL 防回归** → 静态断言 + 程序集加载探测（`MySqlConnector` 必须可加载，`MySql.Data` / `FreeSql.Provider.MySql` 必须加载失败）
-- **多方言集成** → 读环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG` / `DDRAIGBENCH_SQLSERVER`；未设置或不可达即 `Assert.Skip`（**凭据不进仓库**）。SQL Server 基础测试与 M5-3 集成测（schema、表/视图/函数/过程/DML trigger 清单与定义），以及 MySQL/PG 的触发器与例程定义、PG 物化视图、MySQL 原始表定义（`SHOW CREATE TABLE`）和 MySQL 计划事件（建→列→取定义→重执行→清理全链路）均已在 MariaDB 10.5.29 / PostgreSQL 13.23 / SQL Server 2022 Developer 靶机实测通过
+- **多方言集成** → 读环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG` / `DDRAIGBENCH_SQLSERVER`；未设置或不可达即 `Assert.Skip`（**凭据不进仓库**）。SQL Server 基础测试与 M5-3 集成测（schema、表/视图/函数/过程/DML trigger 清单与定义），以及 MySQL/PG 的触发器与例程定义、PG 物化视图、MySQL 原始表定义（`SHOW CREATE TABLE`）和 MySQL 计划事件（建→列→取定义→重执行→清理全链路）和 MySQL 分区表树（建 RANGE 表→展开→核对分区名/方法/表达式/边界→清理）均已在 MariaDB 10.5.29 / PostgreSQL 13.23 / SQL Server 2022 Developer 靶机实测通过
 - **密钥库集成** → 真访问本机 freedesktop Secret Service；用唯一 `application` 属性隔离并结束即删，**不污染真实凭据**；无会话总线即 `Assert.Skip`。信封加密本身用假主密钥纯单测，**CI 无密钥库也全绿**
 - **ViewModel** → 纯逻辑测，不启 Avalonia
 - **控件级** → `Avalonia.Headless` + xUnit v3 `AssemblyFixture`（覆盖结果网格动态列、工作台折叠还原、强调色对比度；只 new 控件，不构造 `Window`——headless 下 Composition 归 fixture 线程，测试线程建 `TopLevel` 会抛 `InvalidOperationException`）
@@ -117,8 +117,8 @@ dotnet run   --project DdraigBench                # 启动应用
 
 诚实列出当前**未做 / 未实测**的部分：
 
-1. **SQL Server 元数据仍不完整**——Provider、连接对话框、连接测试、查询、当前库、schema 层和基础表/视图元数据已接入，连接/表 DDL 重建与 M5-3 的 schema、DML trigger、函数/过程目录及定义、视图原始定义均已在 SQL Server 2022 Developer（AlmaLinux 9.8 上 Podman）靶机实测。SQL Server catalog 不保存原始 `CREATE TABLE` 文本，表 DDL 只能由 FreeSql 元数据重建。自动服务端分页有意关闭（`PagedSql` 的派生表包装不符合 T-SQL 对子查询 `ORDER BY` 的要求，且移除排序会改变语义），查询仍可执行并受客户端读取上限保护。
-2. **M5-3 元数据仍有缺口**——已落地并验证：视图定义（SQLite / MySQL / PG / SQL Server）、SQLite 触发器定义、schema 与触发器/函数/存储过程清单，以及 **MySQL / PG 的触发器与例程定义**（2026-10-12 在 MariaDB 10.5.29 / PostgreSQL 13.23 靶机跑通建→列→取定义→清理全链路）、PG 物化视图定义（`relkind='m'` 拼 `CREATE MATERIALIZED VIEW`）、MySQL 原始表定义（`SHOW CREATE TABLE`）和 SQL Server schema / DML trigger / 函数 / 过程清单与定义及原始视图定义。仍缺：MySQL 分区的独立结构化树展示（分区 DDL 已随 `SHOW CREATE TABLE` 保真）和 SQL Server 安全服务端分页。SQL Server 不保存原始 `CREATE TABLE` 文本，表 DDL 由 `DdlGenerator` 按元数据重建。MySQL 计划事件已新增 `DbObjectKind.Event`，在 MariaDB 10.5.29 靶机完成周期/一次性事件的建→列→DDL 预览→定义重执行→清理验证；`SHOW CREATE TABLE` 原文也已在靶机确认保留 `PARTITION BY` 子句。按「未实测代码不入库」原则，后续方言查询需对应靶机验证。
+1. **SQL Server 原始表 DDL 的产品边界**——Provider、连接对话框、连接测试、查询、当前库、schema 层和基础表/视图元数据已接入，连接/表 DDL 重建与 M5-3 的 schema、DML trigger、函数/过程目录及定义、视图原始定义均已在 SQL Server 2022 Developer（AlmaLinux 9.8 上 Podman）靶机实测。SQL Server catalog 不保存原始 `CREATE TABLE` 文本，表 DDL 只能由 FreeSql 元数据重建。SQL Server 服务端分页仅在顶层 `ORDER BY` 且无冲突语法时直加 `OFFSET/FETCH`，已靶机验证；`PagedSql` 不使用派生表包装，其他形状 fail-closed 并继续受客户端读取上限保护。
+2. **M5-3 已完成；剩余为产品边界**——已落地并验证：视图定义（SQLite / MySQL / PG / SQL Server）、SQLite 触发器定义、schema 与触发器/函数/存储过程/事件清单，以及 **MySQL / PG 的触发器与例程定义**（2026-10-12 在 MariaDB 10.5.29 / PostgreSQL 13.23 靶机跑通建→列→取定义→清理全链路）、PG 物化视图定义（`relkind='m'` 拼 `CREATE MATERIALIZED VIEW`）、MySQL 原始表定义（`SHOW CREATE TABLE`）和 SQL Server schema / DML trigger / 函数 / 过程清单与定义及原始视图定义。仍无可读取的 SQL Server 原始 `CREATE TABLE` 文本（SQL Server 不持久化该语句，这是产品限制而非可补的目录查询缺口）；表 DDL 由 `DdlGenerator` 按元数据重建。SQL Server 的直接 `OFFSET/FETCH` 分页已在 SQL Server 2022 Developer 靶机验证，仅支持顶层有序简单查询，复杂/不安全形状 fail-closed。MySQL 计划事件已新增 `DbObjectKind.Event`，在 MariaDB 10.5.29 靶机完成周期/一次性事件的建→列→DDL 预览→定义重执行→清理验证；MySQL 分区现作为表节点下的惰性子树，通过 `information_schema.PARTITIONS` 读取（分区名、方法、表达式与边界）；该信息只在展开表节点时读取，普通/非分区表返回空集。MariaDB 10.5.29 靶测确认 `SHOW CREATE TABLE` 保留 `PARTITION BY`，独立子树亦通过分区表建→展开→断言→清理验证。按「未实测代码不入库」原则，后续方言查询需对应靶机验证。
 3. **连接清单 UI 只能新建 / 打开 / 删除**——2026-10-11 起：左栏「连接」标题栏新增移除按钮（绑 `ForgetSavedConnectionCommand`，未选中时禁用），删除已有入口；与主题下拉框重复的死命令 `SetThemeCommand` 已删除（C4）。仍欠**编辑**已保存连接（改名 / 改连接串 / 改口令）。
 4. **需要 UI 线程的控件无法在测试里构造**——如 `TextEditor`；`HeadlessUnitTestSession` 在 MTP + fixture 组合下实测挂死，`new Window()` 也会抛 `InvalidOperationException`（Composition 归 fixture 线程）。动态列等不触碰 Dispatcher 的控件已纳入 headless 回归。
 5. **线程归属类修复无红测对照**——事务的取租约 / 提交 / 回滚移出 UI 线程（M4）：`DbSession` 是 `sealed` 且 `_sessionProvider` 无观测缝，由既有真 SQLite 事务往返测兜底；其余修复（启动崩溃、执行重入、并发连接、分页解析、清单版本闸、连接串转义、目录截断、取消契约、存储线程归属、展开失败重试、折叠展开还原、BLOB 显示、导出默认路径、列类型对齐与排序）均有"先见红再修"的回归测。
@@ -128,7 +128,7 @@ dotnet run   --project DdraigBench                # 启动应用
 
 ## 路线图
 
-- M5-3：SQL Server 目录对象/定义查询**已靶机验证通过**；MySQL/PG 触发器与例程定义、PG 物化视图定义、MySQL 原始表定义（`SHOW CREATE TABLE`）与 MySQL 计划事件**均已靶机验证通过**（2026-10-12）；剩余 MySQL 分区的独立树展示与 SQL Server 安全服务端分页。SQL Server 不保存原始 `CREATE TABLE` 文本，这不是可读取的原始定义通道；表 DDL 继续按元数据重建。
+- M5-3：SQL Server 目录对象/定义查询**已靶机验证通过**；MySQL/PG 触发器与例程定义、PG 物化视图定义、MySQL 原始表定义（`SHOW CREATE TABLE`）、计划事件与表节点下的分区子树**均已靶机验证通过**（2026-10-12）。SQL Server 仅对带顶层 `ORDER BY` 的简单 SELECT 尝试直接 `OFFSET/FETCH`，无序/多语句/已有分页/TOP/OPTION/FOR 查询保留客户端读取上限；该 T-SQL 分支已于 2026-10-12 经 SQL Server 2022 Developer 靶机验证（有序首末页均取到预期记录，无序与危险 SQL 形状 fail-closed）。SQL Server 不保存原始 `CREATE TABLE` 文本，这不是可读取的原始定义通道；表 DDL 继续按元数据重建。
 - 连接清单的**编辑**（重命名 / 改连接串 / 改口令；新建 / 打开 / 删除已就绪）
 - 跨平台密钥库打磨：libsecret 直连评估、钥匙串 ACL 异常的用户可读提示
 - 结果网格的**跨页 / 服务端排序**（表头点击排序当前页、数字与日期右对齐已就绪，见「已知限制」8）
