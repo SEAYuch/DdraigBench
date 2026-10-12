@@ -7,7 +7,7 @@ public enum DbObjectKind
     Database,
 
     /// <summary>
-    /// 模式（M5-2 追加）。只有 PostgreSQL 这类「库内含模式」的方言才有这一层：
+    /// 模式（M5-2 追加，M5-3 增 SQL Server）。PostgreSQL / SQL Server 的库内含模式；
     /// MySQL 的库等价于模式、SQLite 无模式，两者在 <c>GetObjectsAsync</c> 里返回空集，树也就不加这一层。
     /// </summary>
     Schema,
@@ -20,4 +20,10 @@ public enum DbObjectKind
     StoredProcedure,
     Trigger,
     Function,
+
+    /// <summary>
+    /// 计划事件（M5-3 追加）。目前只有 MySQL / MariaDB 有这类对象
+    /// （<c>information_schema.EVENTS</c>，由事件调度器按时间表执行）；其余方言返回空集，树也就不加这一组。
+    /// </summary>
+    Event,
 }

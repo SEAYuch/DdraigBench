@@ -255,7 +255,8 @@ public sealed class MainViewModel : ViewModelBase
                 or DbObjectKind.View
                 or DbObjectKind.Trigger
                 or DbObjectKind.StoredProcedure
-                or DbObjectKind.Function,
+                or DbObjectKind.Function
+                or DbObjectKind.Event,
         };
 
     public bool CanOpenSelectedData => _session is not null && _selectedNode?.CanOpenData == true;
@@ -588,7 +589,7 @@ public sealed class MainViewModel : ViewModelBase
             return;
         }
 
-        // PostgreSQL is already connected to the selected database; its tree container is the schema.
+        // PostgreSQL and SQL Server are already connected to the selected database; their tree container is the schema.
         var sql = BuildDataSelect(_session.Profile.DataType, node.Container, node.Name);
         if (node.Kind == DbObjectKind.Table)
         {
@@ -659,9 +660,9 @@ public sealed class MainViewModel : ViewModelBase
     {
         if (_session is null || selectedNode is not { Container: not null, Kind: not null } node
             || node.Kind is not (DbObjectKind.Table or DbObjectKind.View or DbObjectKind.Trigger
-                or DbObjectKind.StoredProcedure or DbObjectKind.Function))
+                or DbObjectKind.StoredProcedure or DbObjectKind.Function or DbObjectKind.Event))
         {
-            Status = "请先连接并选中左侧的表或视图";
+            Status = "请先连接并选中左侧的表、视图、触发器、例程或事件";
             return;
         }
 
@@ -686,7 +687,7 @@ public sealed class MainViewModel : ViewModelBase
     /// <summary>
     /// 展开一个库节点：先探模式层，有模式就先铺一层模式节点，没有就直接铺对象。
     /// SQLite（无模式）与 MySQL（库即模式）落进"直接铺对象"的分支，树形与 M5-1 完全一致；
-    /// PostgreSQL 则得到「库 → 模式 → 对象」。
+    /// PostgreSQL 与 SQL Server 则得到「库 → 模式 → 对象」。
     /// </summary>
     private ConnectionTreeNodeViewModel CreateDatabaseNode(string database, DbSession session) =>
         new(database, DbObjectKind.Database, async node =>
@@ -721,7 +722,7 @@ public sealed class MainViewModel : ViewModelBase
             }
         }, database);
 
-    /// <summary>模式节点（PostgreSQL）：其子对象与 DDL 预览都以模式名为容器。</summary>
+    /// <summary>模式节点（PostgreSQL / SQL Server）：其子对象与 DDL 预览都以模式名为容器。</summary>
     private ConnectionTreeNodeViewModel CreateSchemaNode(string schema, DbSession session) =>
         new(schema, DbObjectKind.Schema, async node =>
         {
@@ -743,7 +744,7 @@ public sealed class MainViewModel : ViewModelBase
 
     /// <summary>
     /// 铺开一个容器（库或模式）下的对象：表 / 视图走 IDbFirst，触发器 / 存储过程 / 函数走目录查询补齐
-    /// （M5-1，AGENTS.md §6.2）。方言没有这类对象时返回空集，不会报错。
+    /// （M5-1；SQL Server M5-3（待靶机验证），AGENTS.md §6.2）。方言没有这类对象时返回空集，不会报错。
     /// </summary>
     private async Task LoadObjectsAsync(ConnectionTreeNodeViewModel node, string container, DbSession session)
     {
@@ -754,6 +755,7 @@ public sealed class MainViewModel : ViewModelBase
                      (DbObjectKind.Trigger, "触发器"),
                      (DbObjectKind.StoredProcedure, "存储过程"),
                      (DbObjectKind.Function, "函数"),
+                     (DbObjectKind.Event, "事件"),
                  })
         {
             var objects = await _metadata.GetObjectsAsync(session, container, kind);

@@ -28,6 +28,7 @@ internal static class CatalogQueryExecutor
 
         var commentIndex = IndexOf(result.Columns, "comment");
         var definitionIndex = IndexOf(result.Columns, "definition");
+        var schemaIndex = IndexOf(result.Columns, "schema");
 
         var objects = new List<DbObjectInfo>(result.Rows.Count);
         foreach (var row in result.Rows)
@@ -40,7 +41,7 @@ internal static class CatalogQueryExecutor
 
             objects.Add(new DbObjectInfo(
                 name,
-                Schema: null,
+                Schema: schemaIndex >= 0 ? AsString(row[schemaIndex]) : null,
                 Comment: commentIndex >= 0 ? AsString(row[commentIndex]) : null,
                 Definition: definitionIndex >= 0 ? AsString(row[definitionIndex]) : null));
         }
@@ -59,6 +60,47 @@ internal static class CatalogQueryExecutor
         }
 
         return AsString(result.Rows[0][0]);
+    }
+
+    /// <summary>
+    /// 取「定义」列的文本。优先取名为 <c>definition</c> 的列；没有该列时，取唯一一个以
+    /// <c>Create </c> 开头的列——MySQL 的 <c>SHOW CREATE TABLE</c> 列名随对象类型变
+    /// （<c>Create Table</c> / <c>Create View</c>），列名不能写死在 SQL 里。
+    /// 命中多列时抛错而非猜：猜错会把列名当 DDL 返回，用户复制执行必炸。
+    /// </summary>
+    internal static async Task<string?> ReadDefinitionAsync(DbSession session, string sql, CancellationToken ct)
+    {
+        var result = await RunAsync(session, sql, ct);
+
+        if (result.Rows.Count == 0 || result.Rows[0].Length == 0)
+        {
+            return null;
+        }
+
+        var row = result.Rows[0];
+
+        var named = IndexOf(result.Columns, "definition");
+        if (named >= 0 && named < row.Length)
+        {
+            return AsString(row[named]);
+        }
+
+        var matches = new List<int>();
+        for (var i = 0; i < result.Columns.Count && i < row.Length; i++)
+        {
+            if (result.Columns[i].StartsWith("Create ", StringComparison.OrdinalIgnoreCase))
+            {
+                matches.Add(i);
+            }
+        }
+
+        return matches.Count switch
+        {
+            1 => AsString(row[matches[0]]),
+            0 => null,
+            _ => throw new InvalidOperationException(
+                $"定义查询返回多个「Create …」列，无法判断用哪个（SQL：{sql}）"),
+        };
     }
 
     private static async Task<QueryResult> RunAsync(DbSession session, string sql, CancellationToken ct)

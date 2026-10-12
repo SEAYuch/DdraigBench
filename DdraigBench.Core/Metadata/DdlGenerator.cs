@@ -9,8 +9,8 @@ using FsColumn = FreeSql.DatabaseModel.DbColumnInfo;
 namespace DdraigBench.Core.Metadata;
 
 /// <summary>
-/// 把 IDbFirst 的 <see cref="DbTableInfo"/> 渲染成可复制执行的 DDL。
-/// 已知取舍：视图/触发器/函数定义 IDbFirst 不返回（见 AGENTS.md §6.2），此处只给提示与列结构。
+/// 把 IDbFirst 的 <see cref="DbTableInfo"/> 渲染成可复制执行的表 DDL；视图在目录查询没有可用原始定义时，仅给出列结构提示。
+/// 触发器 / 函数 / 存储过程不走本生成器，改由 <see cref="FreeSqlMetadataExplorer"/> 按目录定义查询。
 /// </summary>
 public sealed class DdlGenerator(ISqlDialect dialect)
 {

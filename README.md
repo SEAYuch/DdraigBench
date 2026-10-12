@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
-[![Tests: 266 passed](https://img.shields.io/badge/tests-266%20passed%20%2F%2027%20skipped-success.svg)]
+[![Tests: 320 total](https://img.shields.io/badge/tests-320%20total-success.svg)]
 
 ---
 
@@ -13,7 +13,7 @@
 | 项 | 状态 |
 |---|---|
 | 构建 | `dotnet build DdraigBench.slnx -c Release` — **零警告零错误** |
-| 测试 | **302 个用例**（274 通过 / 28 跳过 — 跳过项为无环境用例：macOS 钥匙串、freedesktop Secret Service、Unix 文件权限、MySQL/PG/SQL Server 靶机） |
+| 测试 | **320 个用例**（离线通道 288 通过 / 32 跳过；接入 MySQL/PG 靶机后 295 通过 / 25 跳过 — 跳过项为无环境用例：SQL Server 靶机、macOS 钥匙串、freedesktop Secret Service、Unix 文件权限） |
 | 已实现方言 | SQLite、MySQL / MariaDB、PostgreSQL、SQL Server |
 | 里程碑 | M1 闭环 / M2 多方言 / M3 编辑器与会话 / M4 生产力功能 / M5-1 目录查询层 / M5-2 模式层 — **均已落地**（M5-3 元数据缺口仍在） |
 
@@ -28,9 +28,9 @@
 - 清单 UI：左侧已保存连接列表（双击激活）+ 标题栏「移除」（未选中时禁用）+ 明文回退告警条；清单读取失败时**放弃本次会话写盘**，绝不覆盖既有文件
 
 **对象浏览**
-- 左侧树惰性加载：SQLite / MySQL「库 → 表 / 视图 / 触发器 / 函数 / 存储过程 → 列」，PostgreSQL 多一层「模式」（M5-2），SQL Server 浏览当前库
+- 左侧树惰性加载：SQLite / MySQL「库 → 表 / 视图 / 触发器 / 函数 / 存储过程 / 事件 → 列」；PostgreSQL / SQL Server「当前库 → 模式 → 对象组 → 对象 → 列」（SQL Server M5-3 目录与模式层已靶机验证）
 - 树筛选（只筛已加载节点，不清库）与展开失败收敛（失败写状态栏、清掉失败前塞进去的半个子树，并可右键「重试加载」或折叠后重新展开，不留"静默空树"）
-- **DDL 预览**：**原始定义优先**（SQLite 读 `sqlite_master.sql`，保留 `AUTOINCREMENT` / 内联 `UNIQUE` / `CHECK` / `COLLATE`），取不到才按 `IDbFirst` 元数据重建 `CREATE TABLE` / `CREATE [UNIQUE] INDEX` / 外键 / 注释 / DEFAULT，可直接复制执行
+- **DDL 预览**：**原始定义优先**（SQLite 读 `sqlite_master.sql`，保留 `AUTOINCREMENT` / 内联 `UNIQUE` / `CHECK` / `COLLATE`；MySQL 表走 `SHOW CREATE TABLE`，保住 `ENGINE=` / 排序规则 / 表注释；SQL Server 从 `sys.sql_modules` 取视图 / DML 触发器 / 函数 / 过程定义；PG 视图与物化视图分别拼 `CREATE [OR REPLACE] VIEW` / `CREATE MATERIALIZED VIEW`——均已在真靶机实测），取不到才按 `IDbFirst` 元数据重建 `CREATE TABLE` / `CREATE [UNIQUE] INDEX` / 外键 / 注释 / DEFAULT，可直接复制执行
 
 **查询**
 - SQL 编辑器（AvaloniaEdit）：行号、等宽、不换行
@@ -108,7 +108,7 @@ dotnet run   --project DdraigBench                # 启动应用
 
 - **Core 逻辑** → xunit 单测；数据库依赖一律用**临时 SQLite 文件**（不 mock `IFreeSql`，走真连接）
 - **GPL 防回归** → 静态断言 + 程序集加载探测（`MySqlConnector` 必须可加载，`MySql.Data` / `FreeSql.Provider.MySql` 必须加载失败）
-- **多方言集成** → 读环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG` / `DDRAIGBENCH_SQLSERVER`；未设置或不可达即 `Assert.Skip`（**凭据不进仓库**）。SQL Server 用 `DDRAIGBENCH_SQLSERVER` 覆盖连接串，在 SQL Server 2022 Developer 靶机执行查询、当前库与表元数据/DDL 往返验证
+- **多方言集成** → 读环境变量 `DDRAIGBENCH_MYSQL` / `DDRAIGBENCH_PG` / `DDRAIGBENCH_SQLSERVER`；未设置或不可达即 `Assert.Skip`（**凭据不进仓库**）。SQL Server 基础测试与 M5-3 集成测（schema、表/视图/函数/过程/DML trigger 清单与定义），以及 MySQL/PG 的触发器与例程定义、PG 物化视图、MySQL 原始表定义（`SHOW CREATE TABLE`）和 MySQL 计划事件（建→列→取定义→重执行→清理全链路）均已在 MariaDB 10.5.29 / PostgreSQL 13.23 / SQL Server 2022 Developer 靶机实测通过
 - **密钥库集成** → 真访问本机 freedesktop Secret Service；用唯一 `application` 属性隔离并结束即删，**不污染真实凭据**；无会话总线即 `Assert.Skip`。信封加密本身用假主密钥纯单测，**CI 无密钥库也全绿**
 - **ViewModel** → 纯逻辑测，不启 Avalonia
 - **控件级** → `Avalonia.Headless` + xUnit v3 `AssemblyFixture`（覆盖结果网格动态列、工作台折叠还原、强调色对比度；只 new 控件，不构造 `Window`——headless 下 Composition 归 fixture 线程，测试线程建 `TopLevel` 会抛 `InvalidOperationException`）
@@ -117,8 +117,8 @@ dotnet run   --project DdraigBench                # 启动应用
 
 诚实列出当前**未做 / 未实测**的部分：
 
-1. **SQL Server 元数据尚未完整**——Provider、连接对话框、连接测试、查询、当前库枚举、表/视图元数据和表 DDL 重建均已接入；SQL Server 2022 Developer（AlmaLinux 9.8 上 Podman 容器）靶机实测通过。事件/分区/触发器/例程清单与定义、视图原始定义尚未实现；当前使用 FreeSql IDbFirst 浏览表/视图并重建表 DDL。自动服务端分页有意关闭（`PagedSql` 的派生表包装不符合 T-SQL 对子查询 `ORDER BY` 的要求，且移除排序会改变语义），查询仍可执行并受客户端读取上限保护。
-2. **M5-3 元数据仍有缺口**——已落地：视图定义（SQLite / MySQL / PG 三方）、SQLite 的触发器定义、触发器 / 函数 / 存储过程**清单**、PG 模式层（M5-1 / M5-2）。仍缺：事件（`information_schema.EVENTS`）、分区（`information_schema.PARTITIONS`）、MySQL/PG 的触发器与例程**定义**、MySQL 表定义（`SHOW CREATE TABLE`）、PG 物化视图（`relkind='m'`）。这些几乎全要 MySQL/PG 靶机实测，按「未实测代码不入库」原则挂起。
+1. **SQL Server 元数据仍不完整**——Provider、连接对话框、连接测试、查询、当前库、schema 层和基础表/视图元数据已接入，连接/表 DDL 重建与 M5-3 的 schema、DML trigger、函数/过程目录及定义、视图原始定义均已在 SQL Server 2022 Developer（AlmaLinux 9.8 上 Podman）靶机实测。SQL Server catalog 不保存原始 `CREATE TABLE` 文本，表 DDL 只能由 FreeSql 元数据重建。自动服务端分页有意关闭（`PagedSql` 的派生表包装不符合 T-SQL 对子查询 `ORDER BY` 的要求，且移除排序会改变语义），查询仍可执行并受客户端读取上限保护。
+2. **M5-3 元数据仍有缺口**——已落地并验证：视图定义（SQLite / MySQL / PG / SQL Server）、SQLite 触发器定义、schema 与触发器/函数/存储过程清单，以及 **MySQL / PG 的触发器与例程定义**（2026-10-12 在 MariaDB 10.5.29 / PostgreSQL 13.23 靶机跑通建→列→取定义→清理全链路）、PG 物化视图定义（`relkind='m'` 拼 `CREATE MATERIALIZED VIEW`）、MySQL 原始表定义（`SHOW CREATE TABLE`）和 SQL Server schema / DML trigger / 函数 / 过程清单与定义及原始视图定义。仍缺：MySQL 分区的独立结构化树展示（分区 DDL 已随 `SHOW CREATE TABLE` 保真）和 SQL Server 安全服务端分页。SQL Server 不保存原始 `CREATE TABLE` 文本，表 DDL 由 `DdlGenerator` 按元数据重建。MySQL 计划事件已新增 `DbObjectKind.Event`，在 MariaDB 10.5.29 靶机完成周期/一次性事件的建→列→DDL 预览→定义重执行→清理验证；`SHOW CREATE TABLE` 原文也已在靶机确认保留 `PARTITION BY` 子句。按「未实测代码不入库」原则，后续方言查询需对应靶机验证。
 3. **连接清单 UI 只能新建 / 打开 / 删除**——2026-10-11 起：左栏「连接」标题栏新增移除按钮（绑 `ForgetSavedConnectionCommand`，未选中时禁用），删除已有入口；与主题下拉框重复的死命令 `SetThemeCommand` 已删除（C4）。仍欠**编辑**已保存连接（改名 / 改连接串 / 改口令）。
 4. **需要 UI 线程的控件无法在测试里构造**——如 `TextEditor`；`HeadlessUnitTestSession` 在 MTP + fixture 组合下实测挂死，`new Window()` 也会抛 `InvalidOperationException`（Composition 归 fixture 线程）。动态列等不触碰 Dispatcher 的控件已纳入 headless 回归。
 5. **线程归属类修复无红测对照**——事务的取租约 / 提交 / 回滚移出 UI 线程（M4）：`DbSession` 是 `sealed` 且 `_sessionProvider` 无观测缝，由既有真 SQLite 事务往返测兜底；其余修复（启动崩溃、执行重入、并发连接、分页解析、清单版本闸、连接串转义、目录截断、取消契约、存储线程归属、展开失败重试、折叠展开还原、BLOB 显示、导出默认路径、列类型对齐与排序）均有"先见红再修"的回归测。
@@ -128,7 +128,7 @@ dotnet run   --project DdraigBench                # 启动应用
 
 ## 路线图
 
-- M5-3：事件与分区、MySQL/PG 触发器与例程定义、MySQL 表定义、PG 物化视图；并补齐 SQL Server 目录对象与定义查询、视图定义及安全服务端分页（SQL Server 基础连接/查询已实测）
+- M5-3：SQL Server 目录对象/定义查询**已靶机验证通过**；MySQL/PG 触发器与例程定义、PG 物化视图定义、MySQL 原始表定义（`SHOW CREATE TABLE`）与 MySQL 计划事件**均已靶机验证通过**（2026-10-12）；剩余 MySQL 分区的独立树展示与 SQL Server 安全服务端分页。SQL Server 不保存原始 `CREATE TABLE` 文本，这不是可读取的原始定义通道；表 DDL 继续按元数据重建。
 - 连接清单的**编辑**（重命名 / 改连接串 / 改口令；新建 / 打开 / 删除已就绪）
 - 跨平台密钥库打磨：libsecret 直连评估、钥匙串 ACL 异常的用户可读提示
 - 结果网格的**跨页 / 服务端排序**（表头点击排序当前页、数字与日期右对齐已就绪，见「已知限制」8）

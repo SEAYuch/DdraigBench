@@ -14,16 +14,20 @@ namespace DdraigBench.Core.Dialects.CatalogQueries;
 /// <para>
 /// 结果集的列名契约（映射层按名取列，缺列即视为 <c>null</c>，故各方言只 SELECT 自己给得出的列）：
 /// <list type="bullet">
-///   <item>对象清单：<c>name</c>（必填）；<c>comment</c>、<c>definition</c>（可选，definition 必须是完整可执行语句）。</item>
-///   <item>定义查询：<c>definition</c>（单列单行）。</item>
+///   <item>对象清单：<c>name</c>（必填）；<c>schema</c>、<c>comment</c>、<c>definition</c>（可选，definition 必须是完整可执行语句）。</item>
+///   <item>定义查询：首行即目标对象的定义，**完整可执行语句**。执行器按列名取 DDL
+///   （见 <c>CatalogQueryExecutor.ReadDefinitionAsync</c>）：优先取名为 <c>definition</c> 的列，
+///   否则取唯一一个以 <c>Create </c> 开头的列。之所以不是「单列单行」，是因为 MySQL 的
+///   <c>SHOW CREATE TABLE</c> 无法用 <c>SELECT</c> 包起来、且列名随对象类型变
+///   （表 = <c>Create Table</c>、视图 = <c>Create View</c>），只能连名字列一起返回。</item>
 /// </list>
 /// </para>
 /// <para>
 /// <c>database</c> 参数的语义与 <c>IDbFirst.GetTablesByDatabase</c> 保持一致，即「对象所在的容器」：
 /// SQLite = 附加库名（<c>main</c> / <c>temp</c>）、MySQL = schema（等价于库）、
-/// PostgreSQL = schema（FreeSql 的 PG 实现就是按 <c>pg_namespace.nspname</c> 过滤的，
-/// 尽管它的 <c>GetDatabases()</c> 返回的是 <c>pg_database.datname</c>——该不一致由 FreeSql 引入，
-/// 详见 AGENTS.md §4）。
+/// PostgreSQL = schema（FreeSql 的 PG 实现按 <c>pg_namespace.nspname</c> 过滤，尽管它的
+/// <c>GetDatabases()</c> 返回 <c>pg_database.datname</c>——见 AGENTS.md §4）；
+/// SQL Server = 当前数据库名作为库清单项，模式层与库名分开查询。
 /// </para>
 /// </remarks>
 public interface ICatalogQueries
@@ -35,8 +39,8 @@ public interface ICatalogQueries
     string BuildObjectsQuery(string database, DbObjectKind kind);
 
     /// <summary>
-    /// 连接是否被钉死在一个库上（PostgreSQL 是：一个连接只能看到所连库内的模式，
-    /// 跨库要么换连接、要么上 dblink/FDW）。为真时 <c>GetDatabasesAsync</c> 只应返回当前库，
+    /// 连接是否被钉死在一个库上（PostgreSQL / SQL Server：连接的对象目录限于所连库，
+    /// 跨库需新连接）。为真时 <c>GetDatabasesAsync</c> 只应返回当前库，
     /// 否则会把"看得见却打不开"的库列进树里（M5-2 修的就是这个）。
     /// </summary>
     bool ConnectionIsBoundToSingleDatabase { get; }
@@ -52,7 +56,7 @@ public interface ICatalogQueries
 
     /// <summary>
     /// 把定义体拼成可直接执行的 <c>CREATE VIEW</c> 语句。
-    /// SQLite 的 <c>sqlite_master.sql</c> 本身即完整语句，实现应原样返回；
+    /// SQLite 的 <c>sqlite_master.sql</c> 与 SQL Server 的 <c>sys.sql_modules.definition</c> 本身即完整语句，实现应原样返回；
     /// MySQL / PostgreSQL 只给得出 SELECT 主体，需在此补上 CREATE 前缀与限定名。
     /// </summary>
     string ComposeViewDdl(string database, string view, string definition);

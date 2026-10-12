@@ -39,6 +39,58 @@ public sealed class MetadataExplorerTests
     }
 
     [Fact]
+    public async Task Catalog_object_mapper_reads_optional_schema_and_definition_columns()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        await using var session = CreateSession(db, factory);
+
+        var objects = await CatalogQueryExecutor.ReadObjectsAsync(
+            session,
+            "SELECT 'v1' AS name, 'reporting' AS schema, 'CREATE VIEW reporting.v1 AS SELECT 1' AS definition",
+            TestContext.Current.CancellationToken);
+
+        var item = Assert.Single(objects);
+        Assert.Equal("v1", item.Name);
+        Assert.Equal("reporting", item.Schema);
+        Assert.Equal("CREATE VIEW reporting.v1 AS SELECT 1", item.Definition);
+    }
+
+    [Fact]
+    public async Task Catalog_definition_reader_prefers_named_column_and_falls_back_to_create_column()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        await using var session = CreateSession(db, factory);
+        var ct = TestContext.Current.CancellationToken;
+
+        // MySQL 的 SHOW CREATE TABLE 列名是 "Create Table" 而非 definition —— 按前缀挑
+        var byPrefix = await CatalogQueryExecutor.ReadDefinitionAsync(
+            session,
+            "SELECT 't1' AS `Table`, 'CREATE TABLE `t1` (id int)' AS `Create Table`",
+            ct);
+        Assert.Equal("CREATE TABLE `t1` (id int)", byPrefix);
+
+        // 有 definition 列时优先取它，哪怕同时存在别的 Create 开头的列
+        var byName = await CatalogQueryExecutor.ReadDefinitionAsync(
+            session,
+            "SELECT 'CREATE TABLE decoy' AS `Create Table`, 'CREATE TABLE real' AS definition",
+            ct);
+        Assert.Equal("CREATE TABLE real", byName);
+
+        // 没有任何定义列时返回 null，而不是把名字列当 DDL 返回
+        var none = await CatalogQueryExecutor.ReadDefinitionAsync(
+            session, "SELECT 't1' AS `Table`", ct);
+        Assert.Null(none);
+
+        // 多个 Create 开头的列说明契约被破坏，宁可抛错也不要猜
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CatalogQueryExecutor.ReadDefinitionAsync(
+            session,
+            "SELECT 'a' AS `Create Table`, 'b' AS `Create View`",
+            ct));
+    }
+
+    [Fact]
     public async Task GetColumns_returns_columns_with_types()
     {
         using var db = new TempSqliteDatabase();

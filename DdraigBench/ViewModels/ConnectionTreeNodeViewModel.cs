@@ -48,6 +48,7 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
         DbObjectKind.Trigger => "TR",
         DbObjectKind.StoredProcedure => "SP",
         DbObjectKind.Function => "FN",
+        DbObjectKind.Event => "EV",
         DbObjectKind.Column => "C",
         _ => string.Empty,
     });
@@ -55,7 +56,7 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
     public bool CanOpenData => Kind is DbObjectKind.Table or DbObjectKind.View;
 
     public bool CanPreviewDdl => Kind is DbObjectKind.Table or DbObjectKind.View or DbObjectKind.Trigger
-        or DbObjectKind.StoredProcedure or DbObjectKind.Function;
+        or DbObjectKind.StoredProcedure or DbObjectKind.Function or DbObjectKind.Event;
 
     public ObservableCollection<ConnectionTreeNodeViewModel> VisibleChildren { get; } = new();
 
@@ -74,8 +75,8 @@ public sealed class ConnectionTreeNodeViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// 所属**容器**：库级对象是库名，PostgreSQL 的模式级对象是模式名（M5-2）。
-    /// 之所以不叫 Database，是因为 PG 下对象查询的入参是模式，两者混用会把 DDL 预览的库名传错。
+    /// 所属**容器**：SQLite/MySQL 的库级对象传库名；PostgreSQL/SQL Server 的模式级对象传模式名。
+    /// 之所以不叫 Database，是因为 PG / SQL Server 下对象查询的入参是模式，两者混用会把 DDL 预览的容器名传错。
     /// </summary>
     public string? Container { get; }
 
