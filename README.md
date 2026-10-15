@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
-[![Tests: 380 total](https://img.shields.io/badge/tests-380%20total-success.svg)]
+[![Tests: 407 total](https://img.shields.io/badge/tests-407%20total-success.svg)]
 
 ---
 
@@ -13,7 +13,7 @@
 | 项 | 状态 |
 |---|---|
 | 构建 | `dotnet build DdraigBench.slnx -c Release` — **零警告零错误** |
-| 测试 | **380 个用例**（离线通道 348 通过 / 32 跳过。跳过项全部是靶机与平台相关用例——未设环境变量的方言集成测、平台密钥库与 Unix 权限类用例。⚠️ **本轮靶机通道未跑成**：2026-10-15 靶宿主机 192.168.17.130 的 3306/5432/1433 三个端口 TCP 可建立但协议层全部超时、SSH 也握手失败，9 个方言集成测按设计跳过，故不虚报靶机数字；上一轮（370 用例）接 MariaDB + PostgreSQL 为 345 通过 / 25 跳过，三靶机 347 通过 / 23 跳过） |
+| 测试 | **407 个用例**（离线通道 375 通过 / 32 跳过。跳过项全部是靶机与平台相关用例——未设环境变量的方言集成测、平台密钥库与 Unix 权限类用例。**靶机补跑（2026-10-15）**：接入 `DDRAIGBENCH_MYSQL`+`DDRAIGBENCH_PG`（MariaDB 10.5.29 / PostgreSQL 13.23）为 **382 通过 / 25 跳过 / 0 失败**；SQL Server 靶机（192.168.17.130:1433）当日拒绝连接，设了 `DDRAIGBENCH_SQLSERVER` 后 SQL Server 用例按设计连接超时并 `Assert.Skip`（整轮 382 通过 / 25 跳过 / 0 失败、无挂起）；**随后查明是该机上 rootless podman 容器 `ddb-sqlserver` 处于 `Exited`，`podman start` 后约 30 秒恢复，接入三个靶机变量得 384 通过 / 23 跳过 / 0 失败**（9 个方言集成测全部真跑）；**2026-10-16** 又按用户要求把该靶机的 SQL Server 从 rootless podman 容器换成微软原生 `mssql-server` 包（`mssql-server.service` 为 `enabled` + `active`、1433 监听，SA 口令沿用不变，故无需改环境变量），三靶机通道复跑同为 **384 通过 / 23 跳过 / 0 失败**（安装与下载链路的坑详见 AGENTS.md §7）。上一轮（380 用例）离线为 348 通过 / 32 跳过，更早的 370 用例一轮接 MariaDB + PostgreSQL 为 345 通过 / 25 跳过，三靶机 347 通过 / 23 跳过） |
 | 已实现方言 | SQLite、MySQL / MariaDB、PostgreSQL、SQL Server |
 | 里程碑 | M1 闭环 / M2 多方言 / M3 编辑器与会话 / M4 生产力功能 / M5-1 目录查询层 / M5-2 模式层 / **M5-3 元数据完整性 — 已落地并通过靶机验证** |
 
@@ -25,6 +25,7 @@
 - 按 Provider 出参数表的连接对话框（SQLite 本地文件 / MySQL / MariaDB / PostgreSQL / SQL Server）；SQL Server 默认启用加密并验证证书，自签证书仅可显式勾选信任选项
 - 连接测试按钮（返回成功或可读的失败原因）
 - 连接清单持久化：camelCase JSON，**连接串密码经系统密钥库加密**（Windows DPAPI / Linux+FreeBSD freedesktop Secret Service / macOS Keychain；无密钥库时回退明文并在顶部告警），名称与方言明文便于列表展示
+- **回退明文告警会写明失败原因（2026-10-15）**：探测不到密钥库时不再只写"未检测到可用的系统密钥库"，而是给出可操作原因——如「请在"钥匙串访问"中删除 DdraigBench 条目后重试」「请解锁钥匙串后重试」「请改用签名构建」「请换到桌面会话」（`SecretStoreFallback` + `ISecretProtector.FallbackReason`，见 AGENTS.md §2.8 规则 4）
 - 清单 UI：左侧已保存连接列表（双击激活）+ 标题栏「编辑」「移除」「新建」（未选中时编辑/移除禁用）+ 明文回退告警条；清单读取失败时**放弃本次会话写盘**，绝不覆盖既有文件
 
 **对象浏览**
@@ -130,7 +131,7 @@ dotnet run   --project DdraigBench                # 启动应用
 
 - M5-3：SQL Server 目录对象/定义查询**已靶机验证通过**；MySQL/PG 触发器与例程定义、PG 物化视图定义、MySQL 原始表定义（`SHOW CREATE TABLE`）、计划事件与表节点下的分区子树**均已靶机验证通过**（2026-10-12）。SQL Server 仅对带顶层 `ORDER BY` 的简单 SELECT 尝试直接 `OFFSET/FETCH`，无序/多语句/已有分页/TOP/OPTION/FOR 查询保留客户端读取上限；该 T-SQL 分支已于 2026-10-12 经 SQL Server 2022 Developer 靶机验证（有序首末页均取到预期记录，无序与危险 SQL 形状 fail-closed）。SQL Server 不保存原始 `CREATE TABLE` 文本，这不是可读取的原始定义通道；表 DDL 继续按元数据重建。
 - 启动时自动重连上次连接——**已完成（2026-10-13）**，见「已知限制」3。
-- 跨平台密钥库打磨：libsecret 直连评估、钥匙串 ACL 异常的用户可读提示
+- 跨平台密钥库打磨（libsecret 直连评估 + 钥匙串失败原因可读提示）——**已完成（2026-10-15）**：libsecret 直连复核结论为**维持 D-Bus**（`Ace4896.DBus.Services.Secrets`；libsecret 本体 LGPL-2.1-or-later、需 4 个原生 `.so`、异步要 GLib 主循环，且没有任何我们缺的能力——collection/别名/`SearchItems`/`Lock`/`Unlock`/DH 会话/Prompt 都是 Secret Service D-Bus 规范自身能力；详见 AGENTS.md §2.8）；密钥库回退原因经 `SecretStoreFallback` 翻成可操作中文，顶部告警不再只写"未检测到可用的系统密钥库"
 - 结果网格排序的**剩余边界打磨**（跨页/服务端排序已完成 2026-10-13，见「已知限制」8：用户 SQL 自带顶层 `LIMIT`、SQL Server 已有 `ORDER BY` 或表达式列名时仍退回当前页排序）
 - 会话并发上限与生命周期——**已完成（2026-10-15）**：`Core/Sessions/ISessionManager.cs` + `SessionManager.cs` 落地（默认上限 `MaxOpenSessions = 1`，超限开新会话抛 `InvalidOperationException` 而不是静默多挂连接），`MainViewModel` 不再自行 `new DbSession`/`DisposeAsync`，`App` 在 `ShutdownRequested` 里先 `e.Cancel = true`、`await viewModel.DisposeAsync()` 之后才 `desktop.Shutdown()`（否则退出时连接池不释放）。详见 AGENTS.md §4「会话生命周期与并发上限」
 

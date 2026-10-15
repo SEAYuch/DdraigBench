@@ -321,7 +321,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             SecurityWarning = SecretsEncrypted
                 ? null
-                : $"连接口令将以明文保存（保护方式：{ProtectorName}）——未检测到可用的系统密钥库。";
+                : PlaintextFallbackWarning(ProtectorName, store.Protector.FallbackReason);
 
             Status = SavedConnections.Count > 0
                 ? $"已载入 {SavedConnections.Count} 个已保存连接"
@@ -345,6 +345,16 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         await LoadSettingsAsync();
         await TryReconnectLastConnectionAsync();
     }
+
+    /// <summary>
+    /// 明文回退的告警文案。<paramref name="reason"/> 是保护器带回来的平台探测失败原因：
+    /// 有它就替掉笼统的"未检测到可用的系统密钥库"——用户需要知道**能做什么**
+    /// （删掉钥匙串条目重来 / 解锁钥匙串 / 改用签名构建 / 换到桌面会话），而不只是"没检测到"。
+    /// </summary>
+    internal static string PlaintextFallbackWarning(string protectorName, string? reason) =>
+        string.IsNullOrWhiteSpace(reason)
+            ? $"连接口令将以明文保存（保护方式：{protectorName}）——未检测到可用的系统密钥库。"
+            : $"连接口令将以明文保存（保护方式：{protectorName}）——{reason}";
 
     /// <summary>
     /// 读界面偏好（主题 + 上次连接名）并套用主题。<b>任何失败都不得外抛</b>：

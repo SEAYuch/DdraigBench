@@ -51,13 +51,26 @@ public sealed class MacKeychainKeyProvider : IMasterKeyProvider
     public string Name => "macOS Keychain";
 
     /// <summary>
+    /// 最近一次 <see cref="IsAvailableAsync"/> 判定"不可用"时的原因分类；
+    /// 可用时为 <c>null</c>。供 <see cref="SecretProtectors.CreateDefaultAsync"/> 组装用户可读的回退说明。
+    /// </summary>
+    public SecretStoreFallbackReason? UnavailableReason { get; private set; }
+
+    /// <summary>最近一次探测失败时的原始 <c>OSStatus</c>（无状态码失败时为 <c>null</c>）。</summary>
+    public int? UnavailableStatus { get; private set; }
+
+    /// <summary>
     /// 探测本机钥匙串是否可用（能读到条目、或确认条目不存在但钥匙串可写）。
     /// 任何失败都返回 <c>false</c>，交由调用方回退明文——绝不抛异常。
     /// </summary>
     public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)
     {
+        UnavailableReason = null;
+        UnavailableStatus = null;
+
         if (!OperatingSystem.IsMacOS())
         {
+            UnavailableReason = SecretStoreFallbackReason.PlatformUnsupported;
             return Task.FromResult(false);
         }
 
@@ -67,12 +80,32 @@ public sealed class MacKeychainKeyProvider : IMasterKeyProvider
 
             // 探测一律禁 UI：仓库/CI 里没有钥匙串窗口可点。
             var status = MacSecurityFramework.TryCopyData(_service, _account, suppressUi: true, out _);
-            return Task.FromResult(
-                status is MacSecurityFramework.StatusSuccess or MacSecurityFramework.StatusItemNotFound);
+            if (status is MacSecurityFramework.StatusSuccess or MacSecurityFramework.StatusItemNotFound)
+            {
+                return Task.FromResult(true);
+            }
+
+            // 记下失败原因（ACL 拦下 / 已锁定 / 缺授权组 / 钥匙串本身不可用），
+            // 让 UI 能给出"删条目重来 / 解锁 / 换签名构建"这类可操作提示。
+            UnavailableReason = SecretStoreFallback.FromMacStatus(status);
+            UnavailableStatus = status;
+            return Task.FromResult(false);
+        }
+        catch (PlatformNotSupportedException)
+        {
+            UnavailableReason = SecretStoreFallbackReason.PlatformUnsupported;
+            return Task.FromResult(false);
+        }
+        catch (KeychainUnavailableException ex)
+        {
+            UnavailableReason = SecretStoreFallback.FromMacStatus(ex.Status);
+            UnavailableStatus = ex.Status;
+            return Task.FromResult(false);
         }
         catch (Exception)
         {
             // 宽 catch 是有意的：探测只用于"能否加密"的判定，任何失败都应安全回退明文，而不是让启动崩掉。
+            UnavailableReason = SecretStoreFallbackReason.Unknown;
             return Task.FromResult(false);
         }
     }

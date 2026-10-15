@@ -264,12 +264,14 @@ internal sealed class FakeMasterKeyProvider(byte[]? key = null) : IMasterKeyProv
     }
 }
 
-/// <summary>壳层测试用的口令保护器替身：只暴露名字与是否加密，不做任何真实加解密。</summary>
-internal sealed class FakeSecretProtector(string name, bool isEncrypted) : ISecretProtector
+/// <summary>壳层测试用的口令保护器替身：只暴露名字、是否加密与回退原因，不做任何真实加解密。</summary>
+internal sealed class FakeSecretProtector(string name, bool isEncrypted, string? fallbackReason = null) : ISecretProtector
 {
     public string Name { get; } = name;
 
     public bool IsEncrypted { get; } = isEncrypted;
+
+    public string? FallbackReason { get; } = fallbackReason;
 
     public ValueTask<string> ProtectAsync(string plainText, CancellationToken cancellationToken = default) =>
         ValueTask.FromResult(plainText);
@@ -281,10 +283,11 @@ internal sealed class FakeSecretProtector(string name, bool isEncrypted) : ISecr
 /// <summary>内存版连接清单存储：让 MainViewModel 的持久化逻辑无需真实文件与密钥库即可测。</summary>
 internal sealed class StubConnectionStore(
     IReadOnlyList<ConnectionProfile>? initial = null,
-    bool isEncrypted = true) : IConnectionStore
+    bool isEncrypted = true,
+    string? fallbackReason = null) : IConnectionStore
 {
     public ISecretProtector Protector { get; } =
-        new FakeSecretProtector(isEncrypted ? "stub-encrypted" : "plaintext", isEncrypted);
+        new FakeSecretProtector(isEncrypted ? "stub-encrypted" : "plaintext", isEncrypted, fallbackReason);
 
     public List<ConnectionProfile> Saved { get; set; } = [.. initial ?? []];
 

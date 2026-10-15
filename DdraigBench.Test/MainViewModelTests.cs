@@ -2,6 +2,7 @@
 
 using DdraigBench.Core.Connections;
 using DdraigBench.Core.Metadata;
+using DdraigBench.Core.Secrets;
 using DdraigBench.Services;
 using DdraigBench.ViewModels;
 using FreeSql;
@@ -363,6 +364,24 @@ public sealed class MainViewModelTests
         Assert.True(vm.HasSecurityWarning);
         Assert.Contains("明文", vm.SecurityWarning);
         Assert.Contains("plaintext", vm.SecurityWarning);
+        // 没有探测原因时才用笼统文案（有原因时由下面的用例断言具体说明）。
+        Assert.Contains("未检测到可用的系统密钥库", vm.SecurityWarning);
+    }
+
+    [Fact]
+    public async Task Plaintext_warning_carries_the_keyring_reason_so_the_user_can_act_on_it()
+    {
+        // 钥匙串 ACL 拦下是"用户能自己修"的那一类失败：告警必须给出删除条目/重新授权这类动作，
+        // 而不是只报"未检测到可用的系统密钥库"（那会让人以为机器上没装钥匙串）。
+        var reason = SecretStoreFallback.Describe(SecretStoreFallbackReason.AccessDenied);
+        var store = new StubConnectionStore(isEncrypted: false, fallbackReason: reason);
+        var vm = CreateViewModelWithStore(null, new StubConnectionStoreFactory(store));
+
+        await vm.InitializeAsync();
+
+        Assert.Contains("明文", vm.SecurityWarning);
+        Assert.Contains("钥匙串访问", vm.SecurityWarning);
+        Assert.DoesNotContain("未检测到可用的系统密钥库", vm.SecurityWarning);
     }
 
     [Fact]

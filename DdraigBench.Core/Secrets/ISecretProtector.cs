@@ -15,6 +15,13 @@ public interface ISecretProtector
     /// <summary>是否真的加密（false = 明文回退，UI 须给出警告）。</summary>
     bool IsEncrypted { get; }
 
+    /// <summary>
+    /// 回退到明文的原因说明（只有明文回退的实现会给出；加密实现保持 <c>null</c>）。
+    /// UI 的告警文案用它把"为什么只能明文保存、用户能做什么事"讲清楚
+    /// （文案由 <see cref="SecretStoreFallback.Describe"/> 生成）。
+    /// </summary>
+    string? FallbackReason => null;
+
     ValueTask<string> ProtectAsync(string plainText, CancellationToken cancellationToken = default);
 
     ValueTask<string> UnprotectAsync(string protectedText, CancellationToken cancellationToken = default);

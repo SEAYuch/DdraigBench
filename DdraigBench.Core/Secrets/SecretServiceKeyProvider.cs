@@ -32,6 +32,15 @@ public sealed class SecretServiceKeyProvider : IMasterKeyProvider
     private SecretService? _service;
     private byte[]? _masterKey;
 
+    /// <summary>
+    /// 最近一次 <see cref="IsAvailableAsync"/> 判定"不可用"时的原因分类；可用时为 <c>null</c>。
+    /// 供 <see cref="SecretProtectors.CreateDefaultAsync"/> 组装用户可读的回退说明。
+    /// </summary>
+    public SecretStoreFallbackReason? UnavailableReason { get; private set; }
+
+    /// <summary>最近一次探测失败时的原始错误文本（无异常时为 <c>null</c>），仅用于"未能归类"时补充说明。</summary>
+    public string? UnavailableDetail { get; private set; }
+
     /// <param name="application">
     /// 条目的 <c>application</c> 属性值，用于与其它应用或测试隔离；默认 <c>DdraigBench</c>。
     /// </param>
@@ -51,6 +60,8 @@ public sealed class SecretServiceKeyProvider : IMasterKeyProvider
     {
         if (_service is not null)
         {
+            UnavailableReason = null;
+            UnavailableDetail = null;
             return true;
         }
 
@@ -65,12 +76,17 @@ public sealed class SecretServiceKeyProvider : IMasterKeyProvider
             try
             {
                 await EnsureServiceAsync().ConfigureAwait(false);
+                UnavailableReason = null;
+                UnavailableDetail = null;
                 return true;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // 无会话总线 / 无 Secret Service / 无默认集合 / 密钥环被拒 —— 统一视为"不可用"。
                 // 宽catch是有意的：这里任何失败都应安全回退到明文保护器，而不是让启动崩掉。
+                // 但要把原因留下来：UI 得能区分"环境里压根没有密钥库服务"与"服务在、却被拒绝"。
+                UnavailableReason = SecretStoreFallback.FromFailure(ex);
+                UnavailableDetail = ex.Message;
                 return false;
             }
         }

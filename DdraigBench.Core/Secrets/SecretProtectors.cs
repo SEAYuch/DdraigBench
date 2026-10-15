@@ -26,10 +26,19 @@ public static class SecretProtectors
             // 探测用的实例一律禁 UI：无人值守环境（CI / 启动早期）不该把线程挂在看不见的授权框上，
             // 拿不到就按"无密钥库"回退明文（§2.8 规则 4），不得让启动崩掉。
             var probe = new MacKeychainKeyProvider(suppressUi: true);
-            return await probe.IsAvailableAsync(cancellationToken).ConfigureAwait(false)
+            if (await probe.IsAvailableAsync(cancellationToken).ConfigureAwait(false))
+            {
                 // 正式使用的实例允许弹框：首次授权后（尤其发布签名后）就完全无感。
-                ? new MacKeychainSecretProtector(new MacKeychainKeyProvider())
-                : new PlainTextSecretProtector();
+                return new MacKeychainSecretProtector(new MacKeychainKeyProvider());
+            }
+
+            // 回退明文时带上原因：ACL 拦下 / 已锁定 / 缺授权组 / 没有钥匙串各有各的解法，
+            // 只报"未检测到可用的系统密钥库"会让用户无从下手（见 SecretStoreFallback）。
+            var detail = probe.UnavailableStatus is { } status
+                ? $"{MacSecurityFramework.DescribeStatus(status)}（OSStatus {status}）"
+                : null;
+            return new PlainTextSecretProtector(
+                SecretStoreFallback.Describe(probe.UnavailableReason ?? SecretStoreFallbackReason.Unknown, detail));
         }
 
         if (OperatingSystem.IsLinux() || OperatingSystem.IsFreeBSD())
@@ -39,6 +48,10 @@ public static class SecretProtectors
             {
                 return new SecretServiceSecretProtector(provider);
             }
+
+            return new PlainTextSecretProtector(SecretStoreFallback.Describe(
+                provider.UnavailableReason ?? SecretStoreFallbackReason.Unknown,
+                provider.UnavailableDetail));
         }
 
         return new PlainTextSecretProtector();
