@@ -19,6 +19,9 @@ public sealed class SqlServerDialect : SqlDialectBase
 
     public override bool RequiresTopLevelOrderByForPaging => true;
 
+    /// <summary>T-SQL 的 ORDER BY 不接受输出列序号（<c>ORDER BY 1</c> 被当常量表达式，不排序）。</summary>
+    public override bool SupportsOrdinalOrderBy => false;
+
     public override string BuildPaging(int limit, long offset) =>
         $"OFFSET {offset.ToString(CultureInfo.InvariantCulture)} ROWS " +
         $"FETCH NEXT {limit.ToString(CultureInfo.InvariantCulture)} ROWS ONLY";

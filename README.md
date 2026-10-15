@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
-[![Tests: 324 total](https://img.shields.io/badge/tests-324%20total-success.svg)]
+[![Tests: 380 total](https://img.shields.io/badge/tests-380%20total-success.svg)]
 
 ---
 
@@ -13,7 +13,7 @@
 | 项 | 状态 |
 |---|---|
 | 构建 | `dotnet build DdraigBench.slnx -c Release` — **零警告零错误** |
-| 测试 | **324 个用例**（离线通道 292 通过 / 32 跳过；接入 MySQL/PG 靶机后 297 通过 / 27 跳过；接入 MySQL/PG/SQL Server 靶机后 301 通过 / 23 跳过 — 剩余跳过项为平台密钥库 / Unix 权限类用例） |
+| 测试 | **380 个用例**（离线通道 348 通过 / 32 跳过。跳过项全部是靶机与平台相关用例——未设环境变量的方言集成测、平台密钥库与 Unix 权限类用例。⚠️ **本轮靶机通道未跑成**：2026-10-15 靶宿主机 192.168.17.130 的 3306/5432/1433 三个端口 TCP 可建立但协议层全部超时、SSH 也握手失败，9 个方言集成测按设计跳过，故不虚报靶机数字；上一轮（370 用例）接 MariaDB + PostgreSQL 为 345 通过 / 25 跳过，三靶机 347 通过 / 23 跳过） |
 | 已实现方言 | SQLite、MySQL / MariaDB、PostgreSQL、SQL Server |
 | 里程碑 | M1 闭环 / M2 多方言 / M3 编辑器与会话 / M4 生产力功能 / M5-1 目录查询层 / M5-2 模式层 / **M5-3 元数据完整性 — 已落地并通过靶机验证** |
 
@@ -25,7 +25,7 @@
 - 按 Provider 出参数表的连接对话框（SQLite 本地文件 / MySQL / MariaDB / PostgreSQL / SQL Server）；SQL Server 默认启用加密并验证证书，自签证书仅可显式勾选信任选项
 - 连接测试按钮（返回成功或可读的失败原因）
 - 连接清单持久化：camelCase JSON，**连接串密码经系统密钥库加密**（Windows DPAPI / Linux+FreeBSD freedesktop Secret Service / macOS Keychain；无密钥库时回退明文并在顶部告警），名称与方言明文便于列表展示
-- 清单 UI：左侧已保存连接列表（双击激活）+ 标题栏「移除」（未选中时禁用）+ 明文回退告警条；清单读取失败时**放弃本次会话写盘**，绝不覆盖既有文件
+- 清单 UI：左侧已保存连接列表（双击激活）+ 标题栏「编辑」「移除」「新建」（未选中时编辑/移除禁用）+ 明文回退告警条；清单读取失败时**放弃本次会话写盘**，绝不覆盖既有文件
 
 **对象浏览**
 - 左侧树惰性加载：SQLite / MySQL「库 → 表 / 视图 / 触发器 / 函数 / 存储过程 / 事件 → 列」；PostgreSQL / SQL Server「当前库 → 模式 → 对象组 → 对象 → 列」（SQL Server M5-3 目录与模式层已靶机验证）
@@ -38,7 +38,7 @@
 - **事务模式**：显式提交 / 回滚，切换连接时自动回滚
 - **真·服务端分页**（M3-5）：SQLite / MySQL / PostgreSQL 查询包成派生表 + `LIMIT/OFFSET`，多取一行判定"有无下一页"；工具条可配每页行数并翻页；结果网格行虚拟化。SQL Server 仅对顶层带 `ORDER BY` 的简单 SELECT 直加 `OFFSET/FETCH` 服务端分页（不包派生表）；无序、多语句、已有分页及含 `TOP`/`OPTION`/`FOR` 冲突语句 fail-closed，仍走客户端读取上限
 - 结果集单元格直读无类型行数组（不经绑定引擎）；**列类型感知**：按已读回的值推断列类型，数字与日期右对齐、文本左对齐；二进制列（BLOB）显示为十六进制前缀，超长只截前 32 字节并标注总长，不再显示 `System.Byte[]`
-- **表头点击排序**：按列类型比较（数字按数值、"10" > "9"；日期按时间点；空值一律排最后；同分保持原顺序），再点同一列切换升降序，状态栏显示当前排序
+- **表头点击排序（跨页）**：按列类型比较（数字按数值、"10" > "9"；日期按时间点；空值一律排最后；同分保持原顺序），再点同一列切换升降序。能下推就**下推到服务端**——排序作用在整表上，翻页仍是全局有序；下推不成立（语句自带顶层 `LIMIT`、SQL Server 已有顶层 `ORDER BY` 或列名重复/是表达式、事务中）时退回"只排当前页已读回的行"并在状态栏写明
 - **导出默认路径**：默认落在「文档」目录下的 `export.csv` / `export.sql`（绝对路径），不再相对进程工作目录（快捷方式启动时那是 `System32` 之类不可写的位置）
 
 **导出**
@@ -119,20 +119,20 @@ dotnet run   --project DdraigBench                # 启动应用
 
 1. **SQL Server 原始表 DDL 的产品边界**——Provider、连接对话框、连接测试、查询、当前库、schema 层和基础表/视图元数据已接入，连接/表 DDL 重建与 M5-3 的 schema、DML trigger、函数/过程目录及定义、视图原始定义均已在 SQL Server 2022 Developer（AlmaLinux 9.8 上 Podman）靶机实测。SQL Server catalog 不保存原始 `CREATE TABLE` 文本，表 DDL 只能由 FreeSql 元数据重建。SQL Server 服务端分页仅在顶层 `ORDER BY` 且无冲突语法时直加 `OFFSET/FETCH`，已靶机验证；`PagedSql` 不使用派生表包装，其他形状 fail-closed 并继续受客户端读取上限保护。
 2. **M5-3 已完成；剩余为产品边界**——已落地并验证：视图定义（SQLite / MySQL / PG / SQL Server）、SQLite 触发器定义、schema 与触发器/函数/存储过程/事件清单，以及 **MySQL / PG 的触发器与例程定义**（2026-10-12 在 MariaDB 10.5.29 / PostgreSQL 13.23 靶机跑通建→列→取定义→清理全链路）、PG 物化视图定义（`relkind='m'` 拼 `CREATE MATERIALIZED VIEW`）、MySQL 原始表定义（`SHOW CREATE TABLE`）和 SQL Server schema / DML trigger / 函数 / 过程清单与定义及原始视图定义。仍无可读取的 SQL Server 原始 `CREATE TABLE` 文本（SQL Server 不持久化该语句，这是产品限制而非可补的目录查询缺口）；表 DDL 由 `DdlGenerator` 按元数据重建。SQL Server 的直接 `OFFSET/FETCH` 分页已在 SQL Server 2022 Developer 靶机验证，仅支持顶层有序简单查询，复杂/不安全形状 fail-closed。MySQL 计划事件已新增 `DbObjectKind.Event`，在 MariaDB 10.5.29 靶机完成周期/一次性事件的建→列→DDL 预览→定义重执行→清理验证；MySQL 分区现作为表节点下的惰性子树，通过 `information_schema.PARTITIONS` 读取（分区名、方法、表达式与边界）；该信息只在展开表节点时读取，普通/非分区表返回空集。MariaDB 10.5.29 靶测确认 `SHOW CREATE TABLE` 保留 `PARTITION BY`，独立子树亦通过分区表建→展开→断言→清理验证。按「未实测代码不入库」原则，后续方言查询需对应靶机验证。
-3. **连接清单 UI 只能新建 / 打开 / 删除**——2026-10-11 起：左栏「连接」标题栏新增移除按钮（绑 `ForgetSavedConnectionCommand`，未选中时禁用），删除已有入口；与主题下拉框重复的死命令 `SetThemeCommand` 已删除（C4）。仍欠**编辑**已保存连接（改名 / 改连接串 / 改口令）。
+3. **连接清单 UI 已支持新建 / 打开 / 编辑 / 删除**——2026-10-13：标题栏新增「编辑」按钮（绑 `EditSavedConnectionCommand`，未选中时禁用），对话框进入编辑模式（标题「编辑连接」、确认按钮「保存」）并回填连接串拆出的字段；保存时**就地替换**原条目、不改动列表顺序，重名会被拒绝（否则按名去重会静默吞掉同名条目），被编辑的正是活动连接时状态栏会提示"当前会话仍用旧设置，重新打开后生效"。连接串 → 字段的逆解析在 `Core/Connections/ConnectionStringParser.cs`，借三个真实驱动解析（不手写 `;` 切分），解析失败只回填名称与方言并给提示，绝不静默清空原连接串。2026-10-11 的移除入口（C4/`ForgetSavedConnectionCommand`）与 `SetThemeCommand` 死命令清理保持不变。**启动时自动重连上次连接已落地（2026-10-13）**：只有**连接成功**后才把连接名记进 `ui-settings.json`（连不上的连接不该成为下次启动的目标，否则服务器维护时每次启动都白等一次超时），下次启动按名在清单里找并连接，找不到就安静跳过并清掉失效记录；清单整体读不出来时**保留**该记录（读不出可能只是临时被占用，清掉等于把下次自启动的机会也删了）。移除连接时同步清记录，改名时把记录搬到新名字（名字是唯一身份）。偏好文件因此从"只存主题"扩为 `IUiSettingsStore`（主题 + 上次连接名同住一份文件、整份读写——拆成两个各写一半的存储会让切主题顺手抹掉上次连接名，有红测守着），旧版 PascalCase 的 `{"Theme":"Dark"}` 仍读得出来。
 4. **需要 UI 线程的控件无法在测试里构造**——如 `TextEditor`；`HeadlessUnitTestSession` 在 MTP + fixture 组合下实测挂死，`new Window()` 也会抛 `InvalidOperationException`（Composition 归 fixture 线程）。动态列等不触碰 Dispatcher 的控件已纳入 headless 回归。
 5. **线程归属类修复无红测对照**——事务的取租约 / 提交 / 回滚移出 UI 线程（M4）：`DbSession` 是 `sealed` 且 `_sessionProvider` 无观测缝，由既有真 SQLite 事务往返测兜底；其余修复（启动崩溃、执行重入、并发连接、分页解析、清单版本闸、连接串转义、目录截断、取消契约、存储线程归属、展开失败重试、折叠展开还原、BLOB 显示、导出默认路径、列类型对齐与排序）均有"先见红再修"的回归测。
 6. **UI 视觉验收为人工项**——开发环境无显示器，截图未入库。强调按钮文字色被压掉的问题**已修复（2026-10-11）**：`App.axaml` 原先有一条无条件设 `Foreground` 的隐式 `Style Selector="TextBlock"`，把强调按钮内文字从 `Button` 继承的 `White` 压成正文色 `#FF1B2430`（蓝底 `#FF155A9C`，对比度约 2.2:1，实测）。现改为只在 `Style Selector="Window"` 上设一次前景色，按钮自身的 `Foreground` 在继承链上更近而胜出；回归测 `ThemeContrastTests` 用「样式表 + 继承」两路断言守住，并带 WCAG 4.5:1 对比度门槛。
 7. `ReactiveUI.Avalonia.Autofac` 死重**已清理（2026-10-11，C5）**：从未接线的容器桥包已从 `DdraigBench.csproj` 删除，DI 走 Splat 默认定位器（按 AGENTS.md §2.4 D2 取 b）。
-8. **结果网格排序只排当前页**——服务端分页下手里只有当前页读回的行（没有整表），所以表头点击是"客户端排当前页"、**不跨页**；跨页排序要把 `ORDER BY` 下推到服务端，列在路线图。
+8. **结果网格排序的边界**——表头点击会尽量把 `ORDER BY` 下推到服务端（排序在 `LIMIT/OFFSET` 之前生效，因此跨页有序）；但用户 SQL 自带顶层 `LIMIT`、是多语句脚本或非查询语句时 `PagedSql` 拒绝改写，退回"只排当前页"；SQL Server 另有两条限制：已有顶层 `ORDER BY` 时不改写用户语义（保分页、不排序），列名重复或形如 `COUNT(*)` 的表达式列无法按名排序（宁可不排序也不给出会报错的 SQL）。这些情况状态栏都会注明"当前页 N 行"。
 
 ## 路线图
 
 - M5-3：SQL Server 目录对象/定义查询**已靶机验证通过**；MySQL/PG 触发器与例程定义、PG 物化视图定义、MySQL 原始表定义（`SHOW CREATE TABLE`）、计划事件与表节点下的分区子树**均已靶机验证通过**（2026-10-12）。SQL Server 仅对带顶层 `ORDER BY` 的简单 SELECT 尝试直接 `OFFSET/FETCH`，无序/多语句/已有分页/TOP/OPTION/FOR 查询保留客户端读取上限；该 T-SQL 分支已于 2026-10-12 经 SQL Server 2022 Developer 靶机验证（有序首末页均取到预期记录，无序与危险 SQL 形状 fail-closed）。SQL Server 不保存原始 `CREATE TABLE` 文本，这不是可读取的原始定义通道；表 DDL 继续按元数据重建。
-- 连接清单的**编辑**（重命名 / 改连接串 / 改口令；新建 / 打开 / 删除已就绪）
+- 启动时自动重连上次连接——**已完成（2026-10-13）**，见「已知限制」3。
 - 跨平台密钥库打磨：libsecret 直连评估、钥匙串 ACL 异常的用户可读提示
-- 结果网格的**跨页 / 服务端排序**（表头点击排序当前页、数字与日期右对齐已就绪，见「已知限制」8）
-- 会话并发上限与生命周期（`ISessionManager` 从未创建，见 AGENTS.md §3 的更正）
+- 结果网格排序的**剩余边界打磨**（跨页/服务端排序已完成 2026-10-13，见「已知限制」8：用户 SQL 自带顶层 `LIMIT`、SQL Server 已有 `ORDER BY` 或表达式列名时仍退回当前页排序）
+- 会话并发上限与生命周期——**已完成（2026-10-15）**：`Core/Sessions/ISessionManager.cs` + `SessionManager.cs` 落地（默认上限 `MaxOpenSessions = 1`，超限开新会话抛 `InvalidOperationException` 而不是静默多挂连接），`MainViewModel` 不再自行 `new DbSession`/`DisposeAsync`，`App` 在 `ShutdownRequested` 里先 `e.Cancel = true`、`await viewModel.DisposeAsync()` 之后才 `desktop.Shutdown()`（否则退出时连接池不释放）。详见 AGENTS.md §4「会话生命周期与并发上限」
 
 ## 贡献
 

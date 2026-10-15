@@ -12,6 +12,8 @@ public abstract class SqlDialectBase : ISqlDialect
 
     public virtual bool RequiresTopLevelOrderByForPaging => false;
 
+    public virtual bool SupportsOrdinalOrderBy => true;
+
     public virtual string BuildPaging(int limit, long offset) => $"LIMIT {limit} OFFSET {offset}";
 
     public virtual string FormatLiteral(object? value) => value switch

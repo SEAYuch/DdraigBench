@@ -33,8 +33,8 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     private bool _isExecuting;
     private readonly string? _browserObjectKey;
     private readonly string? _browserObjectName;
-    private int? _sortColumn;
-    private bool _sortDescending;
+    private ResultSort? _sort;
+    private bool _serverSortApplied;
 
     public QueryTabViewModel(
         string header,
@@ -59,7 +59,7 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
         ExportCsvCommand = ReactiveCommand.CreateFromTask(ExportCsvAsync);
         ExportInsertCommand = ReactiveCommand.CreateFromTask(ExportInsertAsync);
         RefreshCommand = ReactiveCommand.CreateFromTask(ExecuteAsync);
-        SortCommand = ReactiveCommand.Create<int>(SortBy);
+        SortCommand = ReactiveCommand.CreateFromTask<int>(SortByAsync);
     }
 
     public string Header { get; }
@@ -91,8 +91,9 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     public ICommand ExportInsertCommand { get; }
 
     /// <summary>
-    /// 按列排序当前页（参数 = 列序号）。只排手里已有的行——服务端分页下没有整表，
-    /// 所以排序不跨页；再次点同一列切换升降序，换页/重新执行会清掉排序状态。
+    /// 按列排序（参数 = 列序号）。能下推到服务端就重跑整条查询——那样排序覆盖整表、翻页也保持有序；
+    /// 下推不成立（SQL Server 已有 ORDER BY、列名不可排序等）时退回"只排当前页已读回的行"，
+    /// 并在状态栏说明这不是全局排序。
     /// </summary>
     public ICommand SortCommand { get; }
 
@@ -212,8 +213,9 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
 
     public async Task ExecuteAsync()
     {
-        // 手动按「执行」回到第一页；翻页命令走 RunAsync（不重置页码）。
+        // 手动按「执行」回到第一页并清掉排序；翻页命令走 RunAsync（保留页码与排序）。
         CurrentPage = 1;
+        ResetSort();
         await RunAsync();
     }
 
@@ -282,9 +284,16 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
             // 服务端分页：查询语句包LIMIT/OFFSET；非查询语句原样执行。
             // 刻意多取一行（pageSize + 1）用来判断"还有下一页"，随后把那行裁掉——
             // 这一行必须由 SQL 的 LIMIT 产生，读取上限拿不到它。
-            var paged = SqlDialects.TryGet(session.Profile.DataType, out var dialect)
-                ? PagedSql.Build(Sql, dialect, pageSize + 1, (long)(CurrentPage - 1) * pageSize)
-                : null;
+            // 表头排序（_sort）一并下推：排序在 LIMIT 之前生效，因此跨页一致。
+            string? paged = null;
+            var sortApplied = false;
+            if (SqlDialects.TryGet(session.Profile.DataType, out var dialect))
+            {
+                paged = PagedSql.Build(
+                    Sql, dialect, pageSize + 1, (long)(CurrentPage - 1) * pageSize, _sort, out sortApplied);
+            }
+
+            _serverSortApplied = paged is not null && sortApplied;
             var statement = paged ?? Sql;
             var readCap = paged is null ? pageSize : pageSize + 1;
 
@@ -312,9 +321,10 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
                 HasNextPage = false;
             }
 
-            ResetSort();
             Columns = visible.Columns;
-            Rows = visible.Rows;
+            Rows = _sort is { } pending && !_serverSortApplied
+                ? ResultCellKinds.Sorted(visible.Rows, pending.ColumnIndex, pending.Descending)
+                : visible.Rows;
             Status = BuildStatus(visible, paged is not null);
         }
         catch (OperationCanceledException)
@@ -500,35 +510,71 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     }
 
     /// <summary>
-    /// 排序当前页已读回的行：数字按数值比（"10" &gt; "9"）、日期按时间点比、其余按序数文本比
-    /// （见 <see cref="ResultCellKinds"/>），空值一律排最后。首次点某列升序，再点同一列切换降序。
+    /// 表头排序：记住目标（列序号 + 方向），能下推到服务端就重跑整条查询，排序因此覆盖整表、翻页保持有序；
+    /// 下推不成立（SQL Server 已有 ORDER BY、列名是表达式或重名等）时退回"只排当前页已读回的行"，
+    /// 状态栏会写明这一点。"下推与否"由 <see cref="PagedSql.Build(string?,ISqlDialect,int,long,ResultSort?,out bool)"/>
+    /// 的 <c>sortApplied</c> 决定，这里不自己猜方言能力。
     /// </summary>
-    private void SortBy(int index)
+    /// <remarks>
+    /// 声明为公开 async 方法而非私有：命令是 fire-and-forget，测试需要 await 到排序真正结束
+    /// （与 <see cref="ExecuteAsync"/> 同一约定）。
+    /// </remarks>
+    public async Task SortByAsync(int index)
     {
-        if (index < 0 || index >= Columns.Count || Rows.Count == 0)
+        if (index < 0 || index >= Columns.Count || Rows.Count == 0 || IsExecuting)
         {
             return;
         }
 
-        if (_sortColumn == index)
+        var descending = _sort is { } previous && previous.ColumnIndex == index && !previous.Descending;
+        var name = Columns[index];
+        _sort = new ResultSort(index, name, descending, Columns.Count(c => c == name) == 1);
+
+        if (SortIsPushable)
         {
-            _sortDescending = !_sortDescending;
-        }
-        else
-        {
-            _sortColumn = index;
-            _sortDescending = false;
+            // 服务端排序：重跑当前页，让 ORDER BY 在 LIMIT 之前生效。
+            await RunAsync();
+
+            // 重跑成功但 ORDER BY 没能写进去（SQL Server 已有顶层 ORDER BY、列名重复/是表达式）：
+            // 至少把手里这一页排一下，否则用户点了表头却什么都没变。
+            if (!_serverSortApplied && Rows.Count > 0)
+            {
+                Rows = ResultCellKinds.Sorted(Rows, index, descending);
+            }
+
+            if (Rows.Count > 0)
+            {
+                Status = _serverSortApplied
+                    ? $"按「{name}」{(descending ? "降序" : "升序")}排序（服务端排序，跨页有效） · {Status}"
+                    : $"按「{name}」{(descending ? "降序" : "升序")}排序（当前页 {Rows.Count} 行，该语句无法跨页排序）";
+            }
+
+            return;
         }
 
-        Rows = ResultCellKinds.Sorted(Rows, index, _sortDescending);
-        Status = $"按「{Columns[index]}」{(_sortDescending ? "降序" : "升序")}排序（当前页 {Rows.Count} 行）";
+        // 没有服务端分页（如 SQL Server 的非分页语句）或语句不可分页：只能排手里的行。
+        Rows = ResultCellKinds.Sorted(Rows, index, descending);
+        Status = $"按「{name}」{(descending ? "降序" : "升序")}排序（当前页 {Rows.Count} 行）";
     }
 
-    /// <summary>新结果到达时清掉排序状态——排序只对到达时的那一页有效，翻页后必须重来。</summary>
+    /// <summary>
+    /// 排序能否交给服务端：需要该方言支持服务端分页、当前语句可被 <see cref="PagedSql"/> 包裹
+    /// （单条 SELECT 且未自带顶层分页），否则重跑也无从排序。
+    /// </summary>
+    private bool SortIsPushable =>
+        _sessionProvider() is { } session
+        && !HasTransaction
+        && SqlDialects.TryGet(session.Profile.DataType, out var dialect)
+        && PagedSql.Build(Sql, dialect, 1, 0, _sort, out _) is not null;
+
+    /// <summary>
+    /// 清掉排序状态：手动「执行」回到未排序的原始结果。
+    /// 翻页与重跑**不清**——跨页排序正是靠翻页时继续带 ORDER BY 才成立。
+    /// </summary>
     private void ResetSort()
     {
-        _sortColumn = null;
-        _sortDescending = false;
+        _sort = null;
+        _serverSortApplied = false;
     }
 
     private string BuildStatus(QueryResult result, bool paged)

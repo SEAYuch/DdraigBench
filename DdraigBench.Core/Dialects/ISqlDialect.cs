@@ -13,6 +13,12 @@ public interface ISqlDialect
     /// <summary>该方言的 OFFSET/FETCH 语法是否要求原查询有顶层 ORDER BY。</summary>
     bool RequiresTopLevelOrderByForPaging { get; }
 
+    /// <summary>
+    /// 是否支持 <c>ORDER BY 序号</c>（按输出列位置排序）。SQLite/MySQL/PG 支持；SQL Server 不支持，
+    /// 只能按列名排序（见 <see cref="Querying.ResultSort"/>）。
+    /// </summary>
+    bool SupportsOrdinalOrderBy { get; }
+
     /// <summary>生成分页子句。</summary>
     string BuildPaging(int limit, long offset);
 

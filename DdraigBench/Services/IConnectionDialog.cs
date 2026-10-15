@@ -6,5 +6,8 @@ namespace DdraigBench.Services;
 
 public interface IConnectionDialog
 {
-    Task<ConnectionProfile?> ShowAsync();
+    /// <summary>
+    /// 打开连接对话框。<paramref name="existing"/> 非空时进入「编辑已保存连接」模式（回填字段、沿用原名）。
+    /// </summary>
+    Task<ConnectionProfile?> ShowAsync(ConnectionProfile? existing = null);
 }

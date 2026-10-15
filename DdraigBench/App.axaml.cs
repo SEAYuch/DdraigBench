@@ -11,7 +11,8 @@ namespace DdraigBench;
 
 public partial class App : Application
 {
-    private readonly ThemePreferenceStore _themeStore = new();
+    private readonly UiSettingsStore _uiSettingsStore = new();
+    private bool _shutdownRequested;
 
     public ThemeMode CurrentThemeMode { get; private set; } = ThemeMode.System;
 
@@ -39,7 +40,7 @@ public partial class App : Application
         {
             try
             {
-                CurrentThemeMode = await _themeStore.LoadAsync();
+                CurrentThemeMode = (await _uiSettingsStore.LoadAsync()).Theme;
             }
             catch (IOException)
             {
@@ -62,7 +63,7 @@ public partial class App : Application
                 new ExportDialog(() => window, filePicker),
                 new DdlViewer(() => window),
                 new SecretConnectionStoreFactory(),
-                _themeStore,
+                _uiSettingsStore,
                 SetThemeModeAsync);
 
             window.DataContext = viewModel;
@@ -71,8 +72,39 @@ public partial class App : Application
             // 读已保存连接要探测系统密钥库（异步、可能阻塞），故等窗口打开后再启动，
             // 且工厂内部把它放到后台线程——绝不占 UI 线程。
             window.Opened += async (_, _) => await viewModel.InitializeAsync();
+
+            // 退出前把会话（连带 FreeSql 连接池）确定性处置掉：先取消这次退出，处置完再真正关闭。
+            desktop.ShutdownRequested += (_, e) =>
+            {
+                if (_shutdownRequested)
+                {
+                    return; // 第二次请求来自下面的 Shutdown()，放行即可。
+                }
+
+                _shutdownRequested = true;
+                e.Cancel = true;
+                _ = DisposeThenShutdownAsync(desktop, viewModel);
+            };
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    /// <summary>退出路径：会话处置失败也没有可上报的地方，无论如何都要把窗口关掉。</summary>
+    private static async Task DisposeThenShutdownAsync(
+        IClassicDesktopStyleApplicationLifetime desktop, MainViewModel viewModel)
+    {
+        try
+        {
+            await viewModel.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"关闭时处置会话失败：{ex.Message}");
+        }
+        finally
+        {
+            desktop.Shutdown();
+        }
     }
 }

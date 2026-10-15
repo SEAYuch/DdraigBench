@@ -27,8 +27,10 @@ public sealed class ConnectionDialogViewModel : ViewModelBase
     private bool _isTesting;
     private bool _testSucceeded;
     private string? _testFailure;
+    private string? _parseWarning;
 
-    public ConnectionDialogViewModel(IFilePicker filePicker, IConnectionTester connectionTester)
+    public ConnectionDialogViewModel(
+        IFilePicker filePicker, IConnectionTester connectionTester, ConnectionProfile? existing = null)
     {
         _filePicker = filePicker;
         _connectionTester = connectionTester;
@@ -38,9 +40,34 @@ public sealed class ConnectionDialogViewModel : ViewModelBase
         CancelCommand = ReactiveCommand.Create(() => CloseRequested?.Invoke(null));
         BrowseCommand = ReactiveCommand.CreateFromTask(BrowseAsync);
         TestCommand = ReactiveCommand.CreateFromTask(TestAsync);
+
+        if (existing is not null)
+        {
+            LoadExisting(existing);
+        }
     }
 
     public event Action<ConnectionProfile?>? CloseRequested;
+
+    /// <summary>true = 正在编辑已保存的连接（标题与按钮文案随之变化）。</summary>
+    public bool IsEditing { get; private set; }
+
+    public string Title => IsEditing ? "编辑连接" : "新建连接";
+
+    public string ConfirmLabel => IsEditing ? "保存" : "连接";
+
+    /// <summary>连接串解析失败时的提示（此时仅回填名称与方言，其余字段留空由用户重填）。</summary>
+    public string? ParseWarning
+    {
+        get => _parseWarning;
+        private set
+        {
+            this.RaiseAndSetIfChanged(ref _parseWarning, value);
+            this.RaisePropertyChanged(nameof(HasParseWarning));
+        }
+    }
+
+    public bool HasParseWarning => !string.IsNullOrEmpty(ParseWarning);
 
     public IReadOnlyList<ProviderOption> ProviderOptions { get; } = new[]
     {
@@ -301,5 +328,49 @@ public sealed class ConnectionDialogViewModel : ViewModelBase
         Port = Provider == DataType.Sqlite
             ? string.Empty
             : ConnectionStringBuilder.DefaultPort(Provider).ToString();
+    }
+
+    /// <summary>
+    /// 回填一个已保存的连接用于编辑：先按方言把连接串拆回结构化参数，
+    /// 拆不出来（历史格式/手工写入）时只回填名称与方言并给出提示，
+    /// <b>绝不静默把连接串清空</b>——那会让用户一次确认就把口令抹掉。
+    /// </summary>
+    private void LoadExisting(ConnectionProfile existing)
+    {
+        IsEditing = true;
+        this.RaisePropertyChanged(nameof(IsEditing));
+        this.RaisePropertyChanged(nameof(Title));
+        this.RaisePropertyChanged(nameof(ConfirmLabel));
+
+        // 直接改字段而走 Setter：Setter 会触发 OnProviderChanged 重算端口，
+        // 把刚从连接串里拆出来的端口覆盖掉。
+        _selectedProvider = ProviderOptions.First(o => o.DataType == existing.DataType);
+        this.RaisePropertyChanged(nameof(SelectedProvider));
+        this.RaisePropertyChanged(nameof(Provider));
+        this.RaisePropertyChanged(nameof(IsFileBased));
+        this.RaisePropertyChanged(nameof(IsServerBased));
+        this.RaisePropertyChanged(nameof(IsSqlServer));
+
+        Name = existing.Name;
+
+        if (!ConnectionStringParser.TryParse(existing.DataType, existing.ConnectionString, out var parameters))
+        {
+            ParseWarning = "无法解析已保存的连接串，请重新填写连接参数（原连接串不会被自动覆盖）";
+            Port = existing.DataType == DataType.Sqlite
+                ? string.Empty
+                : ConnectionStringBuilder.DefaultPort(existing.DataType).ToString();
+            return;
+        }
+
+        FilePath = parameters.FilePath ?? string.Empty;
+        Host = parameters.Host ?? (existing.DataType == DataType.Sqlite ? string.Empty : "localhost");
+        Database = parameters.Database ?? string.Empty;
+        User = parameters.User ?? string.Empty;
+        Password = parameters.Password ?? string.Empty;
+        TrustServerCertificate = parameters.TrustServerCertificate;
+        Port = parameters.Port?.ToString()
+            ?? (existing.DataType == DataType.Sqlite
+                ? string.Empty
+                : ConnectionStringBuilder.DefaultPort(existing.DataType).ToString());
     }
 }

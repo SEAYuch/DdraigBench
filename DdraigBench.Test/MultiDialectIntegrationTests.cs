@@ -561,6 +561,23 @@ public sealed class MultiDialectIntegrationTests
                 Assert.Null(secondPage.Error);
                 Assert.Equal(new[] { 3 }, secondPage.Rows.Select(row => Convert.ToInt32(row[0])));
 
+                // 表头排序下推：没有顶层 ORDER BY 时替用户造一段，再叠加 OFFSET/FETCH（真跑验证 T-SQL 合法）
+                var sort = new ResultSort(0, "id", Descending: true, ColumnNameIsUnique: true);
+                var sortedSql = PagedSql.Build(
+                    "SELECT id, name FROM dbo.ddb_probe_table", dialect, 2, 0, sort, out var sortApplied);
+                Assert.True(sortApplied);
+                Assert.Equal(
+                    "SELECT id, name FROM dbo.ddb_probe_table ORDER BY [id] DESC OFFSET 0 ROWS FETCH NEXT 2 ROWS ONLY",
+                    sortedSql);
+                var sortedResult = await new QueryRunner(session.Fsql).ExecuteAsync(sortedSql!, maxRows: 10);
+                Assert.Null(sortedResult.Error);
+                Assert.Equal(new[] { 3, 2 }, sortedResult.Rows.Select(row => Convert.ToInt32(row[0])));
+
+                // 已有顶层 ORDER BY：不动用户语义，且如实回报"排序没下推"
+                var keptSql = PagedSql.Build(orderedSql, dialect, 2, 0, sort, out var existingApplied);
+                Assert.NotNull(keptSql);
+                Assert.False(existingApplied);
+
                 // SQL Server 加了模式层后对象容器是模式名（AGENTS.md §4），探测表建在 dbo 下
                 var ddl = await explorer.GetDdlAsync(
                     session, "dbo", "ddb_probe_table", TestContext.Current.CancellationToken);

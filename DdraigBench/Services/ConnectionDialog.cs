@@ -18,10 +18,11 @@ public sealed class ConnectionDialog : IConnectionDialog
         _connectionTester = connectionTester;
     }
 
-    public async Task<ConnectionProfile?> ShowAsync()
+    public async Task<ConnectionProfile?> ShowAsync(ConnectionProfile? existing = null)
     {
         var owner = _owner();
-        var viewModel = new ConnectionDialogViewModel(new StorageProviderFilePicker(owner), _connectionTester);
+        var viewModel = new ConnectionDialogViewModel(
+            new StorageProviderFilePicker(owner), _connectionTester, existing);
         var window = new ConnectionDialogView { DataContext = viewModel };
 
         viewModel.CloseRequested += result => window.Close(result);

@@ -317,7 +317,7 @@ public sealed class QueryTabViewModelTests
     }
 
     [Fact]
-    public async Task Sort_command_orders_the_current_page_and_toggles_direction()
+    public async Task Sort_command_pushes_the_ordering_to_the_server_so_it_survives_paging()
     {
         using var db = new TempSqliteDatabase();
         using var factory = new FreeSqlFactory();
@@ -332,25 +332,26 @@ public sealed class QueryTabViewModelTests
 
         Assert.Equal(3, tab.Rows.Count);
 
-        tab.SortCommand.Execute(0);
+        await tab.SortByAsync(0);
 
         // 数值比较：2 < 9 < 10（按文本比会得到 10, 2, 9）
         Assert.Equal(new[] { 2L, 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
         Assert.Contains("升序", tab.Status);
+        Assert.Contains("服务端排序，跨页有效", tab.Status);
 
-        tab.SortCommand.Execute(0);
+        await tab.SortByAsync(0);
 
         Assert.Equal(new[] { 10L, 9L, 2L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
         Assert.Contains("降序", tab.Status);
 
         // 越界列号不改变结果（列号来自表头按钮，做个兜底）
-        tab.SortCommand.Execute(9);
+        await tab.SortByAsync(9);
 
         Assert.Equal(new[] { 10L, 9L, 2L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
     }
 
     [Fact]
-    public async Task Sorting_is_cleared_when_a_new_result_arrives()
+    public async Task Sorting_is_served_across_pages_and_cleared_on_a_manual_run()
     {
         using var db = new TempSqliteDatabase();
         using var factory = new FreeSqlFactory();
@@ -362,13 +363,79 @@ public sealed class QueryTabViewModelTests
 
         tab.Sql = "SELECT n FROM t";
         await tab.ExecuteAsync();
-        tab.SortCommand.Execute(0);
+        await tab.SortByAsync(0);
         Assert.Equal(new[] { 2L, 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
 
+        // 重新执行：排序状态清掉，回到服务端顺序，状态栏也不再声称在排序
         await tab.ExecuteAsync();
 
-        // 排序只对到达时的那一页有效：重新执行后回到服务端顺序，状态栏也不再声称在排序
         Assert.Equal(new[] { 9L, 10L, 2L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
         Assert.DoesNotContain("排序", tab.Status);
+    }
+
+    [Fact]
+    public async Task Sorting_survives_paging_when_it_can_be_pushed_to_the_server()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (n INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (n) VALUES (9), (10), (2), (7)");
+
+        tab.Sql = "SELECT n FROM t";
+        tab.PageSize = 2;
+        await tab.ExecuteAsync();
+        await tab.SortByAsync(0);
+
+        Assert.Equal(new[] { 2L, 7L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+
+        await tab.NextPageAsync();
+
+        // 第二页仍是全局升序的续行，不是"每页各自排序"
+        Assert.Equal(new[] { 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.Contains("第 2 页", tab.Status);
+    }
+
+    [Fact]
+    public async Task Column_header_sort_falls_back_to_the_current_page_when_it_cannot_be_pushed()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (n INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (n) VALUES (9), (10), (2)");
+
+        // 自带顶层 LIMIT：PagedSql 拒绝二次包裹 → 排序无法下推，退回当前页排序
+        tab.Sql = "SELECT n FROM t LIMIT 3";
+        await tab.ExecuteAsync();
+        await tab.SortByAsync(0);
+
+        Assert.Equal(new[] { 2L, 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.Contains("当前页", tab.Status);
+    }
+
+    [Fact]
+    public async Task Sorting_is_not_pushed_inside_a_transaction()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (n INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (n) VALUES (9), (10), (2)");
+
+        tab.Sql = "SELECT n FROM t";
+        await tab.ExecuteAsync();
+        await tab.BeginTransactionAsync();
+        await tab.SortByAsync(0);
+
+        // 事务里重跑语句 = 在事务连接上再执行一次，风险大于收益：只排当前页
+        Assert.Equal(new[] { 2L, 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.Contains("当前页", tab.Status);
     }
 }

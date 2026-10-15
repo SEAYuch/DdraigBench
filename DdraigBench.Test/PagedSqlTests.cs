@@ -189,4 +189,102 @@ public sealed class PagedSqlTests
     {
         Assert.Throws<ArgumentNullException>(() => PagedSql.Build("SELECT 1", null!, 10, 0));
     }
+
+    [Fact]
+    public void Sort_is_pushed_into_the_outer_wrapper_for_dialects_that_accept_ordinals()
+    {
+        var sort = new ResultSort(ColumnIndex: 1, ColumnName: "amount", Descending: true);
+        var sql = PagedSql.Build("SELECT name, amount FROM t", SqliteDialect.Instance, 10, 20, sort, out var applied);
+
+        // 序号而非列名：重名列/表达式列按名排序会歧义
+        Assert.True(applied);
+        Assert.Equal(
+            "SELECT * FROM (SELECT name, amount FROM t) AS \"ddb_page\" ORDER BY 2 DESC LIMIT 10 OFFSET 20",
+            sql);
+    }
+
+    [Fact]
+    public void Sort_inside_a_wrapper_keeps_user_order_by_untouched()
+    {
+        var sort = new ResultSort(0, "id", Descending: false);
+        var sql = PagedSql.Build(
+            "SELECT id FROM t ORDER BY id DESC", SqliteDialect.Instance, 5, 0, sort, out var applied);
+
+        // 用户的 ORDER BY 留在子查询里（原样），我们的排序只加在外层
+        Assert.True(applied);
+        Assert.Equal(
+            "SELECT * FROM (SELECT id FROM t ORDER BY id DESC) AS \"ddb_page\" ORDER BY 1 ASC LIMIT 5 OFFSET 0",
+            sql);
+    }
+
+    [Fact]
+    public void No_sort_means_no_order_by_clause_and_sort_applied_is_false()
+    {
+        var sql = PagedSql.Build("SELECT id FROM t", SqliteDialect.Instance, 10, 0, null, out var applied);
+
+        Assert.False(applied);
+        Assert.Equal("SELECT * FROM (SELECT id FROM t) AS \"ddb_page\" LIMIT 10 OFFSET 0", sql);
+    }
+
+    [Fact]
+    public void SqlServer_gets_an_injected_order_by_only_when_it_has_none_already()
+    {
+        var sort = new ResultSort(0, "id", Descending: false);
+
+        // 没有顶层 ORDER BY：可以现造一段，OFFSET/FETCH 才合法
+        var injected = PagedSql.Build("SELECT id FROM dbo.t", SqlServerDialect.Instance, 25, 50, sort, out var applied1);
+        Assert.True(applied1);
+        Assert.Equal("SELECT id FROM dbo.t ORDER BY [id] ASC OFFSET 50 ROWS FETCH NEXT 25 ROWS ONLY", injected);
+
+        // 已有顶层 ORDER BY：用户语义优先，分页照做但**不**声称排序生效
+        var existing = PagedSql.Build(
+            "SELECT id FROM dbo.t ORDER BY id", SqlServerDialect.Instance, 25, 50, sort, out var applied2);
+        Assert.False(applied2);
+        Assert.Equal("SELECT id FROM dbo.t ORDER BY id OFFSET 50 ROWS FETCH NEXT 25 ROWS ONLY", existing);
+    }
+
+    [Theory]
+    [InlineData("COUNT(*)")]
+    [InlineData("a + b")]
+    [InlineData("1")]
+    [InlineData("")]
+    public void SqlServer_refuses_to_order_by_something_that_is_not_a_plain_column(string columnName)
+    {
+        var sort = new ResultSort(0, columnName, Descending: false);
+
+        // 加方括号会把 COUNT(*) 变成未知标识符——宁可不分页，也不给出会报错的 SQL
+        Assert.Null(PagedSql.Build("SELECT id FROM dbo.t", SqlServerDialect.Instance, 25, 0, sort, out var applied));
+        Assert.False(applied);
+    }
+
+    [Fact]
+    public void SqlServer_refuses_a_duplicate_column_name()
+    {
+        var sort = new ResultSort(0, "id", Descending: false, ColumnNameIsUnique: false);
+
+        Assert.Null(PagedSql.Build("SELECT id, id FROM dbo.t", SqlServerDialect.Instance, 25, 0, sort, out var applied));
+        Assert.False(applied);
+    }
+
+    [Fact]
+    public void Sort_does_not_resurrect_paging_for_statements_that_cannot_be_rewritten()
+    {
+        var sort = new ResultSort(0, "id", Descending: false);
+
+        // 已自带顶层分页 / 多语句脚本：排序下推也救不回来
+        Assert.Null(PagedSql.Build("SELECT id FROM t LIMIT 5", SqliteDialect.Instance, 10, 0, sort, out var a));
+        Assert.Null(PagedSql.Build("SELECT 1; SELECT 2", SqliteDialect.Instance, 10, 0, sort, out var b));
+        Assert.Null(PagedSql.Build("INSERT INTO t (id) VALUES (1)", SqliteDialect.Instance, 10, 0, sort, out var c));
+        Assert.False(a || b || c);
+    }
+
+    [Fact]
+    public void Invalid_page_parameters_still_disable_paging_when_a_sort_is_supplied()
+    {
+        var sort = new ResultSort(0, "id", Descending: false);
+
+        Assert.Null(PagedSql.Build("SELECT 1", SqliteDialect.Instance, 0, 0, sort, out var applied));
+        Assert.False(applied);
+        Assert.Throws<ArgumentNullException>(() => PagedSql.Build("SELECT 1", null!, 10, 0, sort, out _));
+    }
 }

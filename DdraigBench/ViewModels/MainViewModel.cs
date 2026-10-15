@@ -12,7 +12,7 @@ using DdraigBench.Services;
 
 namespace DdraigBench.ViewModels;
 
-public sealed class MainViewModel : ViewModelBase
+public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 {
     private readonly IConnectionDialog _connectionDialog;
     private readonly FreeSqlFactory _factory;
@@ -21,10 +21,11 @@ public sealed class MainViewModel : ViewModelBase
     private readonly IExportDialog _exportDialog;
     private readonly IDdlViewer _ddlViewer;
     private readonly IConnectionStoreFactory _storeFactory;
-    private readonly IThemePreferenceStore? _themePreferenceStore;
+    private readonly IUiSettingsStore? _uiSettingsStore;
     private readonly Func<ThemeMode, Task>? _applyTheme;
     private IConnectionStore? _store;
-    private DbSession? _session;
+    private UiSettings _settings = new();
+    private readonly ISessionManager _sessions;
     private bool _isConnecting;
     private QueryTabViewModel? _selectedTab;
     private ConnectionTreeNodeViewModel? _selectedNode;
@@ -38,6 +39,9 @@ public sealed class MainViewModel : ViewModelBase
     private int _sessionIdentity;
     private ThemeMode _selectedThemeMode = ThemeMode.System;
 
+    /// <summary>当前活动会话。会话的持有与处置统一交给 <see cref="_sessions"/>，这里只取用。</summary>
+    private DbSession? Session => _sessions.Active;
+
     public MainViewModel(
         IConnectionDialog connectionDialog,
         FreeSqlFactory factory,
@@ -46,8 +50,9 @@ public sealed class MainViewModel : ViewModelBase
         IExportDialog exportDialog,
         IDdlViewer ddlViewer,
         IConnectionStoreFactory storeFactory,
-        IThemePreferenceStore? themePreferenceStore = null,
-        Func<ThemeMode, Task>? applyTheme = null)
+        IUiSettingsStore? uiSettingsStore = null,
+        Func<ThemeMode, Task>? applyTheme = null,
+        ISessionManager? sessions = null)
     {
         _connectionDialog = connectionDialog;
         _factory = factory;
@@ -56,12 +61,14 @@ public sealed class MainViewModel : ViewModelBase
         _exportDialog = exportDialog;
         _ddlViewer = ddlViewer;
         _storeFactory = storeFactory;
-        _themePreferenceStore = themePreferenceStore;
+        _uiSettingsStore = uiSettingsStore;
         _applyTheme = applyTheme;
+        _sessions = sessions ?? new SessionManager(_factory);
 
         OpenConnectionCommand = ReactiveCommand.CreateFromTask(OpenConnectionAsync);
         OpenSavedConnectionCommand = ReactiveCommand.CreateFromTask(OpenSavedConnectionAsync);
         ForgetSavedConnectionCommand = ReactiveCommand.CreateFromTask(ForgetSavedConnectionAsync);
+        EditSavedConnectionCommand = ReactiveCommand.CreateFromTask(EditSavedConnectionAsync);
         NewQueryCommand = ReactiveCommand.Create(NewQuery);
         ExecuteSelectedQueryCommand = ReactiveCommand.CreateFromTask(ExecuteSelectedQueryAsync);
         PreviewDdlCommand = ReactiveCommand.CreateFromTask<ConnectionTreeNodeViewModel>(PreviewDdlAsync);
@@ -95,6 +102,12 @@ public sealed class MainViewModel : ViewModelBase
 
     public ObservableCollection<ConnectionTreeNodeViewModel> Databases { get; } = new();
 
+    /// <summary>
+    /// 会话生命周期入口（并发上限 + 确定性处置）。应用退出时由 <c>App</c> 调
+    /// <see cref="DisposeAsync"/>；测试用它核对"换连接不留旧会话"。
+    /// </summary>
+    public ISessionManager Sessions => _sessions;
+
     public ObservableCollection<ConnectionTreeNodeViewModel> VisibleDatabases { get; } = new();
 
     public ObservableCollection<QueryTabViewModel> Tabs { get; } = new();
@@ -107,6 +120,9 @@ public sealed class MainViewModel : ViewModelBase
     public ICommand OpenSavedConnectionCommand { get; }
 
     public ICommand ForgetSavedConnectionCommand { get; }
+
+    /// <summary>编辑选中的已保存连接（改名 / 改连接串 / 改口令），保存后覆盖同一条目。</summary>
+    public ICommand EditSavedConnectionCommand { get; }
 
     public ICommand NewQueryCommand { get; }
 
@@ -167,9 +183,9 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
-    public string ActiveConnectionName => _session?.Profile.Name ?? "未连接";
+    public string ActiveConnectionName => Session?.Profile.Name ?? "未连接";
 
-    public bool IsConnected => _session is not null;
+    public bool IsConnected => Session is not null;
 
     public bool IsNavigatorVisible
     {
@@ -212,6 +228,7 @@ public sealed class MainViewModel : ViewModelBase
             this.RaiseAndSetIfChanged(ref _selectedSavedConnection, value);
             this.RaisePropertyChanged(nameof(CanOpenSavedConnection));
             this.RaisePropertyChanged(nameof(CanForgetSavedConnection));
+            this.RaisePropertyChanged(nameof(CanEditSavedConnection));
         }
     }
 
@@ -246,8 +263,10 @@ public sealed class MainViewModel : ViewModelBase
 
     public bool CanForgetSavedConnection => SelectedSavedConnection is not null;
 
+    public bool CanEditSavedConnection => SelectedSavedConnection is not null;
+
     public bool CanPreviewDdl =>
-        _session is not null
+        Session is not null
         && _selectedNode is
         {
             Container: not null,
@@ -259,7 +278,7 @@ public sealed class MainViewModel : ViewModelBase
                 or DbObjectKind.Event,
         };
 
-    public bool CanOpenSelectedData => _session is not null && _selectedNode?.CanOpenData == true;
+    public bool CanOpenSelectedData => Session is not null && _selectedNode?.CanOpenData == true;
 
     public QueryTabViewModel? SelectedTab
     {
@@ -321,25 +340,29 @@ public sealed class MainViewModel : ViewModelBase
             Status = ex.Message;
         }
 
-        // 放在最后：偏好读取失败要在状态栏里盖过上面那句"就绪/已载入 N 个连接"（告警优先）。
-        await LoadThemePreferenceAsync();
+        // 最后做两件"偏好"事：先是主题（UI 立刻定型），再是自动重连（会写状态栏）。
+        // 顺序刻意如此：重连结果比主题读失败更值得占着状态栏那一行。
+        await LoadSettingsAsync();
+        await TryReconnectLastConnectionAsync();
     }
 
     /// <summary>
-    /// 读界面偏好并应用。<b>任何失败都不得外抛</b>：调用方是壳层 <c>window.Opened</c> 的
-    /// async void 处理器（DdraigBench/App.axaml.cs），异常会变成 UI 线程未处理异常、启动即崩；
-    /// 故此处兜底成"跟随系统 + 状态栏"（读不到偏好文件时 ThemePreferenceStore 自己已回退）。
+    /// 读界面偏好（主题 + 上次连接名）并套用主题。<b>任何失败都不得外抛</b>：
+    /// 调用方是壳层 <c>window.Opened</c> 的 async void 处理器（DdraigBench/App.axaml.cs），
+    /// 异常会变成 UI 线程未处理异常、启动即崩；故此处兜底成"跟随系统 + 状态栏"
+    /// （读不到偏好文件时 <see cref="UiSettingsStore"/> 自己已回退）。
     /// </summary>
-    private async Task LoadThemePreferenceAsync()
+    private async Task LoadSettingsAsync()
     {
-        if (_themePreferenceStore is null)
+        if (_uiSettingsStore is null)
         {
             return;
         }
 
         try
         {
-            _selectedThemeMode = await _themePreferenceStore.LoadAsync();
+            _settings = await _uiSettingsStore.LoadAsync();
+            _selectedThemeMode = _settings.Theme;
             this.RaisePropertyChanged(nameof(SelectedThemeMode));
             this.RaisePropertyChanged(nameof(SelectedThemeName));
             if (_applyTheme is not null)
@@ -349,10 +372,72 @@ public sealed class MainViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            _settings = new UiSettings();
             _selectedThemeMode = ThemeMode.System;
             this.RaisePropertyChanged(nameof(SelectedThemeMode));
             this.RaisePropertyChanged(nameof(SelectedThemeName));
             Status = $"读取界面偏好失败，已回退为跟随系统：{ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// 启动时按名重连上次用过的连接。名字对不上（条目已被移除/改名）就安静跳过。
+    /// 清单整体没读出来（<c>_store</c> 为 null）时<b>既不重连也不清除</b>记录：
+    /// 本次读不出来不代表文件坏了（可能就是临时被占用），保住名字下次启动还能用。
+    /// </summary>
+    private async Task TryReconnectLastConnectionAsync()
+    {
+        if (_store is null || _settings.LastConnectionName is not { } name)
+        {
+            return;
+        }
+
+        var profile = SavedConnections.FirstOrDefault(
+            p => string.Equals(p.Name, name, StringComparison.Ordinal));
+        if (profile is null)
+        {
+            _settings = _settings with { LastConnectionName = null };
+            await SaveSettingsAsync();
+            Status = $"上次连接「{name}」已不在清单中，已跳过自动重连";
+            return;
+        }
+
+        SelectedSavedConnection = profile;
+        if (!await ConnectAsync(profile))
+        {
+            // ConnectCoreAsync 已把失败原因写进 Status 并清理掉死会话，这里只补一句来龙去脉。
+            Status = $"自动重连「{name}」失败：{Status}";
+        }
+    }
+
+    /// <summary>记住"上次成功连接的连接名"，供下次启动自动重连。名字没变就不写盘。</summary>
+    private async Task RememberLastConnectionAsync(ConnectionProfile profile)
+    {
+        if (_uiSettingsStore is null
+            || string.Equals(_settings.LastConnectionName, profile.Name, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _settings = _settings with { LastConnectionName = profile.Name };
+        await SaveSettingsAsync();
+    }
+
+    /// <summary>覆盖写整份界面偏好（主题 + 上次连接名同住一个文件，必须整体写）。</summary>
+    private async Task SaveSettingsAsync()
+    {
+        if (_uiSettingsStore is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _uiSettingsStore.SaveAsync(_settings);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Status = $"无法保存界面偏好：{ex.Message}";
         }
     }
 
@@ -361,6 +446,7 @@ public sealed class MainViewModel : ViewModelBase
         _selectedThemeMode = mode;
         this.RaisePropertyChanged(nameof(SelectedThemeMode));
         this.RaisePropertyChanged(nameof(SelectedThemeName));
+        _settings = _settings with { Theme = mode };
         try
         {
             if (_applyTheme is not null)
@@ -368,9 +454,9 @@ public sealed class MainViewModel : ViewModelBase
                 await _applyTheme(mode);
             }
 
-            if (_themePreferenceStore is not null)
+            if (_uiSettingsStore is not null)
             {
-                await _themePreferenceStore.SaveAsync(mode);
+                await _uiSettingsStore.SaveAsync(_settings);
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -421,12 +507,78 @@ public sealed class MainViewModel : ViewModelBase
         SavedConnections.Remove(profile);
         SelectedSavedConnection = null;
         await PersistAsync();
+
+        // 被移除的正是"上次连接"时，连同记录一起清掉：否则下次启动会去找一个
+        // 用户刚明确删掉的连接（虽然会安静跳过，但那句"已不在清单中"是多余的噪音）。
+        if (string.Equals(_settings.LastConnectionName, profile.Name, StringComparison.Ordinal))
+        {
+            _settings = _settings with { LastConnectionName = null };
+            await SaveSettingsAsync();
+        }
+
         Status = $"已移除连接：{profile.Name}";
     }
 
     /// <summary>
+    /// 编辑选中的已保存连接（改名 / 改连接串 / 改口令）。
+    /// 保存时**就地替换**原条目，不追加、不改变列表顺序。
+    /// </summary>
+    public async Task EditSavedConnectionAsync()
+    {
+        if (SelectedSavedConnection is not { } existing)
+        {
+            Status = "请先在列表中选择一个已保存的连接";
+            return;
+        }
+
+        var edited = await _connectionDialog.ShowAsync(existing);
+        if (edited is null)
+        {
+            return; // 取消：一个字都不改
+        }
+
+        if (edited == existing)
+        {
+            Status = $"连接未改动：{existing.Name}";
+            return;
+        }
+
+        // 改名撞上另一条已保存连接时必须拒绝：落地是按名字去重的（Upsert / ConnectionStore），
+        // 放行等于用新连接静默覆盖那条同名条目，而用户以为只是给自己这条改个名。
+        var collision = SavedConnections.FirstOrDefault(
+            p => !ReferenceEquals(p, existing) && string.Equals(p.Name, edited.Name, StringComparison.Ordinal));
+        if (collision is not null)
+        {
+            Status = $"已存在同名连接：{edited.Name}，请改用其他名称";
+            return;
+        }
+
+        // 正在被编辑的这条是否就是当前活动会话：活动会话持有旧 profile 对象，
+        // 改完不清掉它就只能等下次打开才生效——必须如实告知，不能让用户以为已经热更新。
+        var wasActive = Session is not null && ReferenceEquals(Session.Profile, existing);
+        var connectionChanged = existing.DataType != edited.DataType
+            || !string.Equals(existing.ConnectionString, edited.ConnectionString, StringComparison.Ordinal);
+
+        SavedConnections[SavedConnections.IndexOf(existing)] = edited;
+        SelectedSavedConnection = edited;
+        await PersistAsync();
+
+        // 改名时把"上次连接"记录跟着搬过去（名字是唯一身份）。
+        // 注意要在 PersistAsync 之后：两者写的是不同文件（connections.json / ui-settings.json）。
+        if (string.Equals(_settings.LastConnectionName, existing.Name, StringComparison.Ordinal))
+        {
+            _settings = _settings with { LastConnectionName = edited.Name };
+            await SaveSettingsAsync();
+        }
+
+        Status = wasActive && connectionChanged
+            ? $"已更新连接：{edited.Name}（当前会话仍用旧设置，重新打开后生效）"
+            : $"已更新连接：{edited.Name}";
+    }
+
+    /// <summary>
     /// 建立连接（并发守卫）。连点两个连接 / 双击两下会把两次连接叠加执行：旧标签被清两次、
-    /// 旧会话被重复处置，先建好的会话还会被后一次的 <c>_session</c> 覆盖而泄漏。
+    /// 旧会话被重复处置，先建好的会话还会被后一次的 <c>Session</c> 覆盖而泄漏。
     /// </summary>
     private async Task<bool> ConnectAsync(ConnectionProfile profile)
     {
@@ -460,21 +612,20 @@ public sealed class MainViewModel : ViewModelBase
         SelectedTab = null;
         SelectedNode = null;
 
-        if (_session is not null)
-        {
-            await _session.DisposeAsync();
-        }
-
-        _session = new DbSession(profile, _factory);
-        _sessionIdentity = RuntimeHelpers.GetHashCode(_session);
+        // 单活动连接 = 先收掉旧会话再开新的。SessionManager 的上限是 1，不先关就会
+        // 直接抛「已达会话并发上限」——把"忘了关旧会话"从连接泄漏变成一次响亮的失败。
+        await _sessions.CloseAllAsync();
 
         Databases.Clear();
         try
         {
-            var databases = await _metadata.GetDatabasesAsync(_session);
+            var session = await _sessions.OpenAsync(profile);
+            _sessionIdentity = RuntimeHelpers.GetHashCode(session);
+
+            var databases = await _metadata.GetDatabasesAsync(session);
             foreach (var database in databases)
             {
-                var node = CreateDatabaseNode(database, _session);
+                var node = CreateDatabaseNode(database, session);
                 node.ApplyFilter(TreeFilter);
                 Databases.Add(node);
             }
@@ -484,14 +635,17 @@ public sealed class MainViewModel : ViewModelBase
             this.RaisePropertyChanged(nameof(IsConnected));
             this.RaisePropertyChanged(nameof(CanPreviewDdl));
             NewQuery();
+
+            // 只有**连上了**才记名字：连不上的连接不该成为下次启动的自动重连目标
+            // （服务器在维护时会变成每次启动都白等一次超时）。放在所有失败分支之后。
+            await RememberLastConnectionAsync(profile);
             return true;
         }
         catch (Exception ex)
         {
-            // 失败不留死会话：_session 非 null 会让 IsConnected / 连接名显示成"已连接"，
+            // 失败不留死会话：活动会话非 null 会让 IsConnected / 连接名显示成"已连接"，
             // 而后续每个查询都报错，且这个会话再没人处置。收拾干净并通知 UI。
-            await _session.DisposeAsync();
-            _session = null;
+            await _sessions.CloseAllAsync();
             _sessionIdentity = 0;
 
             Status = ex.Message;
@@ -501,6 +655,9 @@ public sealed class MainViewModel : ViewModelBase
             return false;
         }
     }
+
+    /// <summary>关闭并处置全部会话（应用退出时由 <c>App</c> 调用）。</summary>
+    public async ValueTask DisposeAsync() => await _sessions.DisposeAsync();
 
     /// <summary>按名称覆盖或追加（连接名是用户可见的身份）。</summary>
     private void Upsert(ConnectionProfile profile)
@@ -561,20 +718,20 @@ public sealed class MainViewModel : ViewModelBase
 
     public void NewQuery()
     {
-        var tab = new QueryTabViewModel($"查询 {Tabs.Count + 1}", () => _session, _filePicker, _exportDialog);
+        var tab = new QueryTabViewModel($"查询 {Tabs.Count + 1}", () => Session, _filePicker, _exportDialog);
         Tabs.Add(tab);
         SelectedTab = tab;
     }
 
     public async Task OpenDataAsync(ConnectionTreeNodeViewModel? node)
     {
-        if (_session is null || node is not { Container: not null, Kind: DbObjectKind.Table or DbObjectKind.View })
+        if (Session is null || node is not { Container: not null, Kind: DbObjectKind.Table or DbObjectKind.View })
         {
             Status = "请选择一个表或视图以浏览数据";
             return;
         }
 
-        var key = string.Join('\u001f', _sessionIdentity, _session.Profile.DataType,
+        var key = string.Join('\u001f', _sessionIdentity, Session.Profile.DataType,
             node.Container, node.Kind, node.Name);
         var existing = Tabs.FirstOrDefault(tab => tab.IsDataBrowser && tab.BrowserObjectKey == key);
         if (existing is not null)
@@ -583,17 +740,17 @@ public sealed class MainViewModel : ViewModelBase
             return;
         }
 
-        if (!SqlDialects.TryGet(_session.Profile.DataType, out var dialect))
+        if (!SqlDialects.TryGet(Session.Profile.DataType, out var dialect))
         {
-            Status = $"该方言暂不支持数据浏览：{_session.Profile.DataType}";
+            Status = $"该方言暂不支持数据浏览：{Session.Profile.DataType}";
             return;
         }
 
         // PostgreSQL and SQL Server are already connected to the selected database; their tree container is the schema.
-        var sql = BuildDataSelect(_session.Profile.DataType, node.Container, node.Name);
+        var sql = BuildDataSelect(Session.Profile.DataType, node.Container, node.Name);
         if (node.Kind == DbObjectKind.Table)
         {
-            var primaryKeyColumns = (await _metadata.GetColumnsAsync(_session, node.Container, node.Name))
+            var primaryKeyColumns = (await _metadata.GetColumnsAsync(Session, node.Container, node.Name))
                 .Where(column => column.IsPrimary)
                 .Select(column => dialect.QuoteIdentifier(column.Name))
                 .ToArray();
@@ -602,7 +759,7 @@ public sealed class MainViewModel : ViewModelBase
                 sql += $" ORDER BY {string.Join(", ", primaryKeyColumns)}";
             }
         }
-        var tab = new QueryTabViewModel($"{node.Name}（数据）", () => _session, _filePicker, _exportDialog, key, node.Name)
+        var tab = new QueryTabViewModel($"{node.Name}（数据）", () => Session, _filePicker, _exportDialog, key, node.Name)
         {
             Sql = sql,
         };
@@ -658,7 +815,7 @@ public sealed class MainViewModel : ViewModelBase
 
     public async Task PreviewDdlAsync(ConnectionTreeNodeViewModel? selectedNode)
     {
-        if (_session is null || selectedNode is not { Container: not null, Kind: not null } node
+        if (Session is null || selectedNode is not { Container: not null, Kind: not null } node
             || node.Kind is not (DbObjectKind.Table or DbObjectKind.View or DbObjectKind.Trigger
                 or DbObjectKind.StoredProcedure or DbObjectKind.Function or DbObjectKind.Event))
         {
@@ -668,7 +825,7 @@ public sealed class MainViewModel : ViewModelBase
 
         try
         {
-            var ddl = await _metadata.GetDdlAsync(_session, node.Container!, node.Name);
+            var ddl = await _metadata.GetDdlAsync(Session, node.Container!, node.Name);
             if (ddl is null)
             {
                 Status = $"未找到对象：{node.Container}.{node.Name}";
@@ -692,7 +849,7 @@ public sealed class MainViewModel : ViewModelBase
     private ConnectionTreeNodeViewModel CreateDatabaseNode(string database, DbSession session) =>
         new(database, DbObjectKind.Database, async node =>
         {
-            if (!ReferenceEquals(_session, session))
+            if (!ReferenceEquals(Session, session))
             {
                 return;
             }
@@ -726,7 +883,7 @@ public sealed class MainViewModel : ViewModelBase
     private ConnectionTreeNodeViewModel CreateSchemaNode(string schema, DbSession session) =>
         new(schema, DbObjectKind.Schema, async node =>
         {
-            if (!ReferenceEquals(_session, session))
+            if (!ReferenceEquals(Session, session))
             {
                 return;
             }
@@ -759,7 +916,7 @@ public sealed class MainViewModel : ViewModelBase
                  })
         {
             var objects = await _metadata.GetObjectsAsync(session, container, kind);
-            if (!ReferenceEquals(_session, session))
+            if (!ReferenceEquals(Session, session))
             {
                 return;
             }
@@ -785,7 +942,7 @@ public sealed class MainViewModel : ViewModelBase
     private ConnectionTreeNodeViewModel CreateObjectNode(string container, string name, DbObjectKind kind, DbSession session) =>
         new(name, kind, async node =>
         {
-            if (!ReferenceEquals(_session, session))
+            if (!ReferenceEquals(Session, session))
             {
                 return;
             }
@@ -794,7 +951,7 @@ public sealed class MainViewModel : ViewModelBase
             {
                 foreach (var column in await _metadata.GetColumnsAsync(session, container, name))
                 {
-                    if (!ReferenceEquals(_session, session))
+                    if (!ReferenceEquals(Session, session))
                     {
                         return;
                     }
@@ -807,7 +964,7 @@ public sealed class MainViewModel : ViewModelBase
                 {
                     foreach (var partition in await _metadata.GetPartitionsAsync(session, container, name))
                     {
-                        if (!ReferenceEquals(_session, session))
+                        if (!ReferenceEquals(Session, session))
                         {
                             return;
                         }

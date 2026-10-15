@@ -6,7 +6,7 @@
         Width="420"
         SizeToContent="Height"
         CanResize="False"
-        Title="新建连接"
+        Title="{Binding Title}"
         WindowStartupLocation="CenterOwner">
 
     <Window.Styles>
@@ -71,6 +71,10 @@
                    IsVisible="{Binding HasError}"
                    TextWrapping="Wrap" />
 
+        <TextBlock Classes="error-message" Text="{Binding ParseWarning}"
+                   IsVisible="{Binding HasParseWarning}"
+                   TextWrapping="Wrap" />
+
         <Border Classes="success-message" IsVisible="{Binding TestSucceeded}" CornerRadius="4" Padding="8,6">
             <TextBlock Classes="success-message" Text="连接成功" />
         </Border>
@@ -81,7 +85,7 @@
         <Grid ColumnDefinitions="Auto,*,Auto,Auto" Margin="0,10,0,0">
             <Button Grid.Column="0" Content="测试连接" Command="{Binding TestCommand}" />
             <Button Grid.Column="2" Content="取消" Command="{Binding CancelCommand}" Margin="0,0,8,0" />
-            <Button Grid.Column="3" Classes="primary" Content="连接" Command="{Binding ConfirmCommand}" />
+            <Button Grid.Column="3" Classes="primary" Content="{Binding ConfirmLabel}" Command="{Binding ConfirmCommand}" />
         </Grid>
     </StackPanel>
 

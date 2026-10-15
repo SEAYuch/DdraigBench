@@ -27,9 +27,35 @@ public static class PagedSql
     /// SQL Server 走独立分支：只在顶层 ORDER BY 存在且无 TOP / OPTION / FOR 冲突子句时，
     /// 直接追加 OFFSET/FETCH；不包派生表，也不制造任意排序。
     /// </remarks>
-    public static string? Build(string? sql, ISqlDialect dialect, int pageSize, long offset)
+    public static string? Build(string? sql, ISqlDialect dialect, int pageSize, long offset) =>
+        Build(sql, dialect, pageSize, offset, sort: null, out _);
+
+    /// <summary>
+    /// 构造分页查询，并把表头排序一并下推到服务端（跨页排序）。
+    /// </summary>
+    /// <param name="sort">
+    /// 表头排序目标；为 <c>null</c> 时行为与不排序完全一致。
+    /// </param>
+    /// <param name="sortApplied">
+    /// 排序是否真的写进了 SQL。为 <c>false</c> 时调用方必须退回"只排当前页已读回的行"，
+    /// 否则用户会看到"点了排序但顺序没变"（SQL Server 已有顶层 ORDER BY、列名不可排序等情况）。
+    /// </param>
+    /// <remarks>
+    /// 支持序号的方言（SQLite/MySQL/PG）把原语句包成派生表后在**外层**加 <c>ORDER BY 序号</c>：
+    /// 排序作用于整条语句的结果集，再叠加 LIMIT/OFFSET，因此跨页有效。
+    /// SQL Server 不能包派生表（内层裸 ORDER BY 非法），只在原语句**没有**顶层 ORDER BY 时
+    /// 直接补一段 <c>ORDER BY 列名</c> + OFFSET/FETCH；已有 ORDER BY 时保持可分页但不排序（fail-closed）。
+    /// </remarks>
+    public static string? Build(
+        string? sql,
+        ISqlDialect dialect,
+        int pageSize,
+        long offset,
+        ResultSort? sort,
+        out bool sortApplied)
     {
         ArgumentNullException.ThrowIfNull(dialect);
+        sortApplied = false;
 
         if (pageSize <= 0 || offset < 0 || !dialect.SupportsServerPaging)
         {
@@ -43,12 +69,36 @@ public static class PagedSql
         }
 
         var scan = Scan(statement, dialect.RequiresTopLevelOrderByForPaging);
-        if (!scan.StartsWithQuery || scan.HasTopLevelPaging || scan.MultipleStatements
-            || (dialect.RequiresTopLevelOrderByForPaging
-                && (!scan.HasTopLevelOrderBy || scan.HasTsqlPagingConflict)))
+        if (!scan.StartsWithQuery || scan.HasTopLevelPaging || scan.MultipleStatements)
         {
             return null;
         }
+
+        // 需要顶层 ORDER BY 的方言（SQL Server）：已有的 ORDER BY 不允许我们改写（改错会改变用户语义），
+        // 没有 ORDER BY 时可以用排序目标现造一段；两者都做不到就整条放弃分页（保持原样执行）。
+        string? injectedOrderBy = null;
+        if (dialect.RequiresTopLevelOrderByForPaging)
+        {
+            if (scan.HasTsqlPagingConflict)
+            {
+                return null;
+            }
+
+            if (!scan.HasTopLevelOrderBy)
+            {
+                injectedOrderBy = sort is ResultSort tsqlSort ? BuildOrderBy(dialect, tsqlSort) : null;
+                if (injectedOrderBy is null)
+                {
+                    return null;
+                }
+            }
+        }
+        else
+        {
+            injectedOrderBy = sort is ResultSort wrapperSort ? BuildOrderBy(dialect, wrapperSort) : null;
+        }
+
+        sortApplied = injectedOrderBy is not null;
 
         // 结尾的顶层分号必须先去掉；保留它会让派生表或 OFFSET/FETCH 后缀变成语法错误。
         var body = scan.LastTopLevelSemicolon >= 0
@@ -66,9 +116,73 @@ public static class PagedSql
 
         // SQL Server 要求 OFFSET/FETCH 直接跟在带 ORDER BY 的查询后；不能套派生表，
         // 因为 T-SQL 禁止派生表中的裸 ORDER BY。requires-order 方言因此走直加后缀分支。
-        return dialect.RequiresTopLevelOrderByForPaging
-            ? $"{body}{terminator} {paging}"
-            : $"SELECT * FROM ({body}{terminator}) AS {dialect.QuoteIdentifier(PageAlias)} {paging}";
+        if (dialect.RequiresTopLevelOrderByForPaging)
+        {
+            var order = injectedOrderBy is null ? string.Empty : $"{injectedOrderBy} ";
+            return $"{body}{terminator} {order}{paging}";
+        }
+
+        var outerOrder = injectedOrderBy is null ? string.Empty : $" {injectedOrderBy}";
+        return $"SELECT * FROM ({body}{terminator}) AS {dialect.QuoteIdentifier(PageAlias)}"
+            + $"{outerOrder} {paging}";
+    }
+
+    /// <summary>
+    /// 排序子句。支持序号的方言用 <c>ORDER BY 序号</c>（对重名列、表达式列都无歧义）；
+    /// 其余方言只能按列名，列名不唯一或不像一个标识符时返回 <c>null</c>（调用方退回客户端排序）。
+    /// </summary>
+    private static string? BuildOrderBy(ISqlDialect dialect, ResultSort sort)
+    {
+        if (sort.ColumnIndex < 0)
+        {
+            return null;
+        }
+
+        var direction = sort.Descending ? "DESC" : "ASC";
+
+        if (dialect.SupportsOrdinalOrderBy)
+        {
+            return $"ORDER BY {sort.ColumnIndex + 1} {direction}";
+        }
+
+        // T-SQL 只认列名：重名列会让引擎报 ambiguous，表达式列（如 COUNT(*)）加方括号后直接语法错误。
+        return sort.ColumnNameIsUnique && IsSimpleColumnName(sort.ColumnName)
+            ? $"ORDER BY {dialect.QuoteIdentifier(sort.ColumnName)} {direction}"
+            : null;
+    }
+
+    /// <summary>
+    /// 列名是否"看起来就是一个标识符"：只允许字母/数字/下划线/空格，且不以数字开头。
+    /// 目的是挡住 <c>COUNT(*)</c>、<c>a + b</c> 这类被当成列名的表达式文本——加引号后会变成未知标识符。
+    /// </summary>
+    private static bool IsSimpleColumnName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        var first = true;
+        foreach (var c in name)
+        {
+            if (first)
+            {
+                first = false;
+                if (!char.IsLetter(c) && c != '_')
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!char.IsLetterOrDigit(c) && c is not '_' and not ' ')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

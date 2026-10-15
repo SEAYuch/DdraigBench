@@ -10,20 +10,36 @@ namespace DdraigBench.Test;
 
 public sealed class MainViewModelTests
 {
-    private sealed class StubThemePreferenceStore(ThemeMode mode = ThemeMode.System) : IThemePreferenceStore
+    private sealed class StubUiSettingsStore(UiSettings? settings = null) : IUiSettingsStore
     {
-        public ThemeMode Mode { get; private set; } = mode;
+        public UiSettings Settings { get; private set; } = settings ?? new UiSettings();
 
         public int SaveCount { get; private set; }
 
+        public int LoadCount { get; private set; }
+
         public Exception? LoadFailure { get; init; }
 
-        public Task<ThemeMode> LoadAsync(CancellationToken cancellationToken = default) =>
-            LoadFailure is not null ? Task.FromException<ThemeMode>(LoadFailure) : Task.FromResult(Mode);
+        public Exception? SaveFailure { get; init; }
 
-        public Task SaveAsync(ThemeMode mode, CancellationToken cancellationToken = default)
+        public ThemeMode Mode => Settings.Theme;
+
+        public Task<UiSettings> LoadAsync(CancellationToken cancellationToken = default)
         {
-            Mode = mode;
+            LoadCount++;
+            return LoadFailure is not null
+                ? Task.FromException<UiSettings>(LoadFailure)
+                : Task.FromResult(Settings);
+        }
+
+        public Task SaveAsync(UiSettings settings, CancellationToken cancellationToken = default)
+        {
+            if (SaveFailure is not null)
+            {
+                return Task.FromException(SaveFailure);
+            }
+
+            Settings = settings;
             SaveCount++;
             return Task.CompletedTask;
         }
@@ -31,7 +47,19 @@ public sealed class MainViewModelTests
 
     private sealed class StubConnectionDialog(ConnectionProfile? profile) : IConnectionDialog
     {
-        public Task<ConnectionProfile?> ShowAsync() => Task.FromResult(profile);
+        /// <summary>编辑模式的返回值；null 表示沿用构造时给的 profile（非编辑场景）。</summary>
+        public ConnectionProfile? EditResult { get; set; }
+
+        public ConnectionProfile? LastExisting { get; private set; }
+
+        public int ShowCount { get; private set; }
+
+        public Task<ConnectionProfile?> ShowAsync(ConnectionProfile? existing = null)
+        {
+            ShowCount++;
+            LastExisting = existing;
+            return Task.FromResult(existing is null ? profile : EditResult);
+        }
     }
 
     private static ConnectionProfile SqliteProfile(TempSqliteDatabase db) =>
@@ -50,6 +78,16 @@ public sealed class MainViewModelTests
     private static MainViewModel CreateViewModelWithStore(ConnectionProfile? dialogProfile, IConnectionStoreFactory storeFactory) =>
         new(
             new StubConnectionDialog(dialogProfile),
+            new FreeSqlFactory(),
+            new FreeSqlMetadataExplorer(),
+            new StubFilePicker(),
+            new StubExportDialog(),
+            new StubDdlViewer(),
+            storeFactory);
+
+    private static MainViewModel CreateViewModelWithDialog(IConnectionDialog dialog, IConnectionStoreFactory storeFactory) =>
+        new(
+            dialog,
             new FreeSqlFactory(),
             new FreeSqlMetadataExplorer(),
             new StubFilePicker(),
@@ -113,6 +151,44 @@ public sealed class MainViewModelTests
         Assert.Equal("未连接", vm.ActiveConnectionName);
         Assert.Equal("库清单不可用", vm.Status);
         Assert.Empty(vm.Databases);
+        Assert.Equal(0, vm.Sessions.OpenCount);
+    }
+
+    [Fact]
+    public async Task Reconnecting_replaces_the_session_instead_of_stacking_it()
+    {
+        using var db = new TempSqliteDatabase();
+        var vm = CreateViewModel(db);
+
+        await vm.InitializeAsync();
+        await vm.OpenConnectionAsync();
+        var first = vm.Sessions.Active;
+
+        Assert.NotNull(first);
+        Assert.Equal(1, vm.Sessions.OpenCount);
+
+        await vm.OpenConnectionAsync();
+
+        // 单活动连接：换连接必须先收掉旧会话（SessionManager 上限为 1），
+        // 否则这里会变成 2 个会话叠着——上限会把这种手滑直接变成异常。
+        Assert.Equal(1, vm.Sessions.OpenCount);
+        Assert.NotSame(first, vm.Sessions.Active);
+        Assert.True(vm.IsConnected);
+    }
+
+    [Fact]
+    public async Task Disposing_the_view_model_closes_the_active_session()
+    {
+        using var db = new TempSqliteDatabase();
+        var vm = CreateViewModel(db);
+        await vm.InitializeAsync();
+        await vm.OpenConnectionAsync();
+        Assert.Equal(1, vm.Sessions.OpenCount);
+
+        await vm.DisposeAsync();
+
+        Assert.Equal(0, vm.Sessions.OpenCount);
+        Assert.False(vm.IsConnected);
     }
 
     [Fact]
@@ -417,6 +493,130 @@ public sealed class MainViewModelTests
 
         await vm.ForgetSavedConnectionAsync();
         Assert.Contains("请先", vm.Status);
+
+        await vm.EditSavedConnectionAsync();
+        Assert.Contains("请先", vm.Status);
+    }
+
+    [Fact]
+    public async Task Edit_replaces_the_saved_entry_in_place_without_reordering()
+    {
+        using var db = new TempSqliteDatabase();
+        var original = new ConnectionProfile("旧名字", DataType.Sqlite, db.ConnectionString);
+        var second = new ConnectionProfile("另一个", DataType.Sqlite, db.ConnectionString);
+        var edited = new ConnectionProfile("新名字", DataType.Sqlite, db.ConnectionString);
+
+        var store = new StubConnectionStore([original, second]);
+        var dialog = new StubConnectionDialog(null) { EditResult = edited };
+        var vm = CreateViewModelWithDialog(dialog, new StubConnectionStoreFactory(store));
+        await vm.InitializeAsync();
+
+        vm.SelectedSavedConnection = original;
+        Assert.True(vm.CanEditSavedConnection);
+
+        await vm.EditSavedConnectionAsync();
+
+        // 就地替换：顺序不变，且只动这一条
+        Assert.Same(original, dialog.LastExisting);
+        Assert.Equal([edited, second], vm.SavedConnections);
+        Assert.Equal([edited, second], store.Saved);
+        Assert.Equal(1, store.SaveCount);
+        Assert.Contains("已更新连接", vm.Status);
+    }
+
+    [Fact]
+    public async Task Edit_cancelled_changes_nothing()
+    {
+        using var db = new TempSqliteDatabase();
+        var original = new ConnectionProfile("原样", DataType.Sqlite, db.ConnectionString);
+
+        var store = new StubConnectionStore([original]);
+        var dialog = new StubConnectionDialog(null) { EditResult = null }; // 用户点了取消
+        var vm = CreateViewModelWithDialog(dialog, new StubConnectionStoreFactory(store));
+        await vm.InitializeAsync();
+
+        vm.SelectedSavedConnection = original;
+        await vm.EditSavedConnectionAsync();
+
+        Assert.Equal([original], vm.SavedConnections);
+        Assert.Equal(0, store.SaveCount);
+        Assert.Same(original, vm.SelectedSavedConnection);
+    }
+
+    [Fact]
+    public async Task Renaming_onto_an_existing_name_is_rejected()
+    {
+        using var db = new TempSqliteDatabase();
+        var first = new ConnectionProfile("甲", DataType.Sqlite, db.ConnectionString);
+        var second = new ConnectionProfile("乙", DataType.Sqlite, db.ConnectionString);
+
+        var store = new StubConnectionStore([first, second]);
+        // 把「甲」改名成已经存在的「乙」：落盘按名字去重，放行等于静默吞掉「乙」
+        var dialog = new StubConnectionDialog(null)
+        {
+            EditResult = new ConnectionProfile("乙", DataType.Sqlite, db.ConnectionString),
+        };
+        var vm = CreateViewModelWithDialog(dialog, new StubConnectionStoreFactory(store));
+        await vm.InitializeAsync();
+
+        vm.SelectedSavedConnection = first;
+        await vm.EditSavedConnectionAsync();
+
+        Assert.Equal([first, second], vm.SavedConnections);
+        Assert.Equal(0, store.SaveCount);
+        Assert.Contains("已存在同名连接", vm.Status);
+    }
+
+    [Fact]
+    public async Task Editing_the_active_connection_warns_that_the_session_keeps_old_settings()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery("CREATE TABLE t1 (id INTEGER PRIMARY KEY)");
+        var original = SqliteProfile(db);
+
+        var store = new StubConnectionStore([original]);
+        var dialog = new StubConnectionDialog(original);
+        var vm = CreateViewModelWithDialog(dialog, new StubConnectionStoreFactory(store));
+        await vm.InitializeAsync();
+
+        vm.SelectedSavedConnection = original;
+        await vm.OpenSavedConnectionAsync();
+        Assert.True(vm.IsConnected);
+
+        // 活动会话持有旧 profile：改完只能等重新打开，状态栏必须如实说
+        var changed = original with { ConnectionString = db.ConnectionString + ";Foreign Keys=True" };
+        dialog.EditResult = changed;
+        await vm.EditSavedConnectionAsync();
+
+        Assert.Contains("重新打开", vm.Status);
+        Assert.Same(changed, Assert.Single(vm.SavedConnections));
+        Assert.Same(changed, vm.SelectedSavedConnection);
+        Assert.True(vm.IsConnected); // 旧会话照旧能用
+    }
+
+    [Fact]
+    public async Task Renaming_alone_does_not_claim_the_session_is_stale()
+    {
+        using var db = new TempSqliteDatabase();
+        using var seed = db.CreateFsql();
+        seed.Ado.ExecuteNonQuery("CREATE TABLE t1 (id INTEGER PRIMARY KEY)");
+        var original = SqliteProfile(db);
+
+        var store = new StubConnectionStore([original]);
+        var dialog = new StubConnectionDialog(original);
+        var vm = CreateViewModelWithDialog(dialog, new StubConnectionStoreFactory(store));
+        await vm.InitializeAsync();
+
+        vm.SelectedSavedConnection = original;
+        await vm.OpenSavedConnectionAsync();
+
+        dialog.EditResult = original with { Name = "改个名字" };
+        await vm.EditSavedConnectionAsync();
+
+        Assert.DoesNotContain("重新打开", vm.Status);
+        Assert.Contains("已更新连接", vm.Status);
+        Assert.Equal("改个名字", Assert.Single(vm.SavedConnections).Name);
     }
 
     [Fact]
@@ -735,7 +935,7 @@ public sealed class MainViewModelTests
     [Fact]
     public async Task Theme_preference_loads_and_selection_is_persisted_and_applied()
     {
-        var themeStore = new StubThemePreferenceStore(ThemeMode.Dark);
+        var themeStore = new StubUiSettingsStore(new UiSettings(ThemeMode.Dark));
         var applied = new List<ThemeMode>();
         var vm = new MainViewModel(
             new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
@@ -766,7 +966,7 @@ public sealed class MainViewModelTests
         // 回归：读取界面偏好失败绝不能穿透 InitializeAsync ——
         // 壳层是在 window.Opened 的 async void 处理器里调它的（App.axaml.cs），
         // 一旦外抛就是 UI 线程未处理异常、应用启动即崩。
-        var themeStore = new StubThemePreferenceStore { LoadFailure = new IOException("偏好文件被占用") };
+        var themeStore = new StubUiSettingsStore { LoadFailure = new IOException("偏好文件被占用") };
         var vm = new MainViewModel(
             new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
             new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
@@ -783,11 +983,11 @@ public sealed class MainViewModelTests
     public async Task Theme_preference_store_defaults_to_system_and_round_trips()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ddb-theme-{Guid.NewGuid():N}", "ui-settings.json");
-        var store = new ThemePreferenceStore(path);
+        var store = new UiSettingsStore(path);
 
-        Assert.Equal(ThemeMode.System, await store.LoadAsync());
-        await store.SaveAsync(ThemeMode.Dark);
-        Assert.Equal(ThemeMode.Dark, await store.LoadAsync());
+        Assert.Equal(new UiSettings(), await store.LoadAsync());
+        await store.SaveAsync(new UiSettings(ThemeMode.Dark, "本地库"));
+        Assert.Equal(new UiSettings(ThemeMode.Dark, "本地库"), await store.LoadAsync());
 
         Directory.Delete(Path.GetDirectoryName(path)!, recursive: true);
     }
@@ -803,12 +1003,249 @@ public sealed class MainViewModelTests
         // 不能让异常逃到 App.axaml / MainViewModel 的启动路径。
         using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
         {
-            Assert.Equal(ThemeMode.System, await new ThemePreferenceStore(path).LoadAsync());
+            Assert.Equal(new UiSettings(), await new UiSettingsStore(path).LoadAsync());
         }
 
-        Assert.Equal(ThemeMode.Dark, await new ThemePreferenceStore(path).LoadAsync());
+        // 回归：旧版 ThemePreferenceStore 写的是 PascalCase（{"Theme":"Dark"}），
+        // 升级后必须仍读得出来 —— 用户不该因为一次升级丢掉主题偏好。
+        Assert.Equal(new UiSettings(ThemeMode.Dark), await new UiSettingsStore(path).LoadAsync());
 
         Directory.Delete(Path.GetDirectoryName(path)!, recursive: true);
+    }
+
+    [Fact]
+    public async Task Startup_reconnects_the_last_used_connection()
+    {
+        using var db = new TempSqliteDatabase();
+        var profile = SqliteProfile(db);
+        var connectionStore = new StubConnectionStore([profile]);
+        var settings = new StubUiSettingsStore(new UiSettings(ThemeMode.System, profile.Name));
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(connectionStore), settings);
+
+        await vm.InitializeAsync();
+
+        Assert.True(vm.IsConnected);
+        Assert.Equal(profile.Name, vm.ActiveConnectionName);
+        Assert.Single(vm.Tabs);          // 重连走的是和手动打开同一条路 → 自动开一个查询标签
+        Assert.Contains("main", vm.Databases.Select(d => d.Name));
+        Assert.Equal(1, connectionStore.LoadCount);
+        Assert.Equal(0, settings.SaveCount); // 名字没变就不该回写偏好
+    }
+
+    [Fact]
+    public async Task Startup_without_a_recorded_connection_stays_disconnected()
+    {
+        using var db = new TempSqliteDatabase();
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore([SqliteProfile(db)])),
+            new StubUiSettingsStore(new UiSettings()));
+
+        await vm.InitializeAsync();
+
+        Assert.False(vm.IsConnected);
+        Assert.Empty(vm.Tabs);
+        Assert.Contains("已载入", vm.Status);
+    }
+
+    [Fact]
+    public async Task Startup_skips_auto_reconnect_when_the_recorded_name_is_gone()
+    {
+        using var db = new TempSqliteDatabase();
+        var settings = new StubUiSettingsStore(new UiSettings(ThemeMode.System, "已删除的连接"));
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore([SqliteProfile(db)])), settings);
+
+        await vm.InitializeAsync();
+
+        Assert.False(vm.IsConnected);
+        Assert.Contains("已跳过自动重连", vm.Status);
+        Assert.Equal(1, settings.SaveCount);          // 顺手把失效记录清掉
+        Assert.Null(settings.Settings.LastConnectionName);
+        Assert.Equal(ThemeMode.System, settings.Settings.Theme); // 清记录不能顺手把主题也写丢
+    }
+
+    [Fact]
+    public async Task Startup_keeps_the_record_when_the_connection_list_could_not_be_read()
+    {
+        // 清单整体读不出来（_store == null）时**不能**清掉上次连接名：
+        // 读不出来可能只是临时被占用，清掉等于把用户下次自启动的机会也删了。
+        using var db = new TempSqliteDatabase();
+        var settings = new StubUiSettingsStore(new UiSettings(ThemeMode.System, SqliteProfile(db).Name));
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore { LoadFailure = new IOException("文件被占用") }),
+            settings);
+
+        await vm.InitializeAsync();
+
+        Assert.False(vm.IsConnected);
+        Assert.Equal(0, settings.SaveCount);
+        Assert.Equal(SqliteProfile(db).Name, settings.Settings.LastConnectionName);
+    }
+
+    [Fact]
+    public async Task Startup_auto_reconnect_failure_is_reported_and_leaves_no_session()
+    {
+        using var db = new TempSqliteDatabase();
+        var profile = SqliteProfile(db);
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(),
+            new GatedMetadataExplorer { DatabasesFailure = new InvalidOperationException("库清单不可用") },
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore([profile])),
+            new StubUiSettingsStore(new UiSettings(ThemeMode.System, profile.Name)));
+
+        await vm.InitializeAsync();
+
+        Assert.False(vm.IsConnected);        // 失败不留死会话（既有 H2 行为）
+        Assert.Empty(vm.Databases);
+        Assert.Contains("自动重连", vm.Status);
+        Assert.Contains("库清单不可用", vm.Status);
+    }
+
+    [Fact]
+    public async Task Successful_connect_remembers_the_connection_name_for_next_startup()
+    {
+        using var db = new TempSqliteDatabase();
+        var profile = SqliteProfile(db);
+        var settings = new StubUiSettingsStore();
+        var vm = new MainViewModel(
+            new StubConnectionDialog(profile), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()), settings);
+
+        await vm.InitializeAsync();
+        await vm.OpenConnectionAsync();
+
+        Assert.Equal(profile.Name, settings.Settings.LastConnectionName);
+        Assert.Equal(1, settings.SaveCount);
+    }
+
+    [Fact]
+    public async Task Failed_connect_does_not_become_the_next_startup_target()
+    {
+        // 回归：只有连上了才记名字。否则服务器在维护时，每次启动都要白等一次超时。
+        using var db = new TempSqliteDatabase();
+        var profile = SqliteProfile(db);
+        var settings = new StubUiSettingsStore();
+        var vm = new MainViewModel(
+            new StubConnectionDialog(profile), new FreeSqlFactory(),
+            new GatedMetadataExplorer { DatabasesFailure = new InvalidOperationException("连不上") },
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore()), settings);
+
+        await vm.InitializeAsync();
+        await vm.OpenConnectionAsync();
+
+        Assert.Null(settings.Settings.LastConnectionName);
+        Assert.Equal(0, settings.SaveCount);
+    }
+
+    [Fact]
+    public async Task Forget_saved_connection_also_clears_the_auto_reconnect_record()
+    {
+        using var db = new TempSqliteDatabase();
+        var profile = SqliteProfile(db);
+        var settings = new StubUiSettingsStore(new UiSettings(ThemeMode.System, profile.Name));
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore([profile])), settings);
+
+        await vm.InitializeAsync();
+        vm.SelectedSavedConnection = vm.SavedConnections.Single();
+        await vm.ForgetSavedConnectionAsync();
+
+        Assert.Null(settings.Settings.LastConnectionName);
+        Assert.Contains("已移除连接", vm.Status);
+    }
+
+    [Fact]
+    public async Task Renaming_the_recorded_connection_moves_the_auto_reconnect_record()
+    {
+        using var db = new TempSqliteDatabase();
+        var profile = SqliteProfile(db);
+        var renamed = profile with { Name = "改名后的连接" };
+        var settings = new StubUiSettingsStore(new UiSettings(ThemeMode.System, profile.Name));
+        var dialog = new StubConnectionDialog(profile) { EditResult = renamed };
+        var vm = new MainViewModel(
+            dialog, new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore([profile])), settings);
+
+        await vm.InitializeAsync();
+        vm.SelectedSavedConnection = vm.SavedConnections.Single();
+        await vm.EditSavedConnectionAsync();
+
+        // 名字是唯一身份：改名后下次启动要按新名字找得到，而不是"记录指向不存在的老名字"。
+        Assert.Equal(renamed.Name, settings.Settings.LastConnectionName);
+        Assert.Equal(renamed.Name, vm.SavedConnections.Single().Name);
+    }
+
+    [Fact]
+    public async Task Renaming_an_unrelated_connection_leaves_the_record_alone()
+    {
+        using var db = new TempSqliteDatabase();
+        var recorded = SqliteProfile(db);
+        var other = recorded with { Name = "另一条连接" };
+        var renamed = other with { Name = "另一条连接（改名）" };
+        var settings = new StubUiSettingsStore(new UiSettings(ThemeMode.System, recorded.Name));
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null) { EditResult = renamed }, new FreeSqlFactory(),
+            new FreeSqlMetadataExplorer(), new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore([recorded, other])), settings);
+
+        await vm.InitializeAsync();
+        vm.SelectedSavedConnection = vm.SavedConnections.Single(p => p.Name == other.Name);
+        await vm.EditSavedConnectionAsync();
+
+        Assert.Equal(recorded.Name, settings.Settings.LastConnectionName);
+        Assert.Equal(0, settings.SaveCount);
+    }
+
+    [Fact]
+    public async Task Reopening_the_same_connection_does_not_rewrite_the_settings_file()
+    {
+        using var db = new TempSqliteDatabase();
+        var profile = SqliteProfile(db);
+        var settings = new StubUiSettingsStore(new UiSettings(ThemeMode.System, profile.Name));
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore([profile])), settings);
+
+        await vm.InitializeAsync();
+        vm.SelectedSavedConnection = vm.SavedConnections.Single();
+        await vm.OpenSavedConnectionAsync();
+
+        Assert.Equal(0, settings.SaveCount); // 每次重连都写盘是没必要的 IO
+    }
+
+    [Fact]
+    public async Task Theme_switch_keeps_the_auto_reconnect_record()
+    {
+        // 回归：主题与"上次连接"同住 ui-settings.json，切主题必须整体写、不能抹掉另一半。
+        using var db = new TempSqliteDatabase();
+        var profile = SqliteProfile(db);
+        var settings = new StubUiSettingsStore(new UiSettings(ThemeMode.System, profile.Name));
+        var vm = new MainViewModel(
+            new StubConnectionDialog(null), new FreeSqlFactory(), new FreeSqlMetadataExplorer(),
+            new StubFilePicker(), new StubExportDialog(), new StubDdlViewer(),
+            new StubConnectionStoreFactory(new StubConnectionStore([profile])), settings);
+
+        await vm.InitializeAsync();
+        await vm.SetThemeAsync(ThemeMode.Dark);
+
+        Assert.Equal(ThemeMode.Dark, settings.Settings.Theme);
+        Assert.Equal(profile.Name, settings.Settings.LastConnectionName);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)
