@@ -35,6 +35,10 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     private readonly string? _browserObjectName;
     private ResultSort? _sort;
     private bool _serverSortApplied;
+    private string? _executedSql;
+
+    /// <summary>编辑器文本改过之后翻页时的提示：宁可不动页码，也不要拿一条新语句套旧排序。</summary>
+    private const string StaleEditorStatus = "编辑器内容已改动，未重跑查询：请先执行（F5）再翻页";
 
     public QueryTabViewModel(
         string header,
@@ -226,6 +230,12 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
             return;
         }
 
+        if (!EditorMatchesLastRun())
+        {
+            Status = StaleEditorStatus;
+            return;
+        }
+
         CurrentPage++;
         await RunAsync();
     }
@@ -234,6 +244,12 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
     {
         if (!HasPreviousPage)
         {
+            return;
+        }
+
+        if (!EditorMatchesLastRun())
+        {
+            Status = StaleEditorStatus;
             return;
         }
 
@@ -285,16 +301,18 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
             // 刻意多取一行（pageSize + 1）用来判断"还有下一页"，随后把那行裁掉——
             // 这一行必须由 SQL 的 LIMIT 产生，读取上限拿不到它。
             // 表头排序（_sort）一并下推：排序在 LIMIT 之前生效，因此跨页一致。
-            string? paged = null;
-            var sortApplied = false;
+            // 这里用 Plan 而不是 Build：除了分页语句，还要把"排序为什么没下推"留给状态栏。
+            var executedSql = Sql;
+            var plan = default(PagedSqlPlan);
             if (SqlDialects.TryGet(session.Profile.DataType, out var dialect))
             {
-                paged = PagedSql.Build(
-                    Sql, dialect, pageSize + 1, (long)(CurrentPage - 1) * pageSize, _sort, out sortApplied);
+                plan = PagedSql.Plan(
+                    executedSql, dialect, pageSize + 1, (long)(CurrentPage - 1) * pageSize, _sort);
             }
 
-            _serverSortApplied = paged is not null && sortApplied;
-            var statement = paged ?? Sql;
+            var paged = plan.Sql;
+            _serverSortApplied = paged is not null && plan.SortApplied;
+            var statement = paged ?? executedSql;
             var readCap = paged is null ? pageSize : pageSize + 1;
 
             var result = await Task.Run(
@@ -305,6 +323,9 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
                 Status = "已取消";
                 return;
             }
+
+            // 网格里的行是这条语句产生的：翻页/排序据此判断编辑器文本有没有被改过。
+            _executedSql = executedSql;
 
             var visible = result;
             if (paged is not null)
@@ -511,9 +532,9 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>
     /// 表头排序：记住目标（列序号 + 方向），能下推到服务端就重跑整条查询，排序因此覆盖整表、翻页保持有序；
-    /// 下推不成立（SQL Server 已有 ORDER BY、列名是表达式或重名等）时退回"只排当前页已读回的行"，
-    /// 状态栏会写明这一点。"下推与否"由 <see cref="PagedSql.Build(string?,ISqlDialect,int,long,ResultSort?,out bool)"/>
-    /// 的 <c>sortApplied</c> 决定，这里不自己猜方言能力。
+    /// 下推不成立（SQL Server 已有 ORDER BY、列名是表达式或重名、事务中、编辑器文本已改动等）时退回
+    /// "只排当前页已读回的行"，状态栏会写明**具体原因**。"下推与否"由
+    /// <see cref="PagedSql.Plan"/> 的 <c>SortApplied</c> 决定，这里不自己猜方言能力。
     /// </summary>
     /// <remarks>
     /// 声明为公开 async 方法而非私有：命令是 fire-and-forget，测试需要 await 到排序真正结束
@@ -528,9 +549,9 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
 
         var descending = _sort is { } previous && previous.ColumnIndex == index && !previous.Descending;
         var name = Columns[index];
-        _sort = new ResultSort(index, name, descending, Columns.Count(c => c == name) == 1);
+        _sort = ResultSort.For(Columns, index, descending);
 
-        if (SortIsPushable)
+        if (SortIsPushable && EditorMatchesLastRun())
         {
             // 服务端排序：重跑当前页，让 ORDER BY 在 LIMIT 之前生效。
             await RunAsync();
@@ -546,20 +567,63 @@ public sealed class QueryTabViewModel : ViewModelBase, IAsyncDisposable
             {
                 Status = _serverSortApplied
                     ? $"按「{name}」{(descending ? "降序" : "升序")}排序（服务端排序，跨页有效） · {Status}"
-                    : $"按「{name}」{(descending ? "降序" : "升序")}排序（当前页 {Rows.Count} 行，该语句无法跨页排序）";
+                    : $"按「{name}」{(descending ? "降序" : "升序")}排序（只在当前页 {Rows.Count} 行内排序：{SortFallbackText()}）";
             }
 
             return;
         }
 
-        // 没有服务端分页（如 SQL Server 的非分页语句）或语句不可分页：只能排手里的行。
+        // 没有服务端分页、语句不可分页、在事务里，或编辑器文本已改动：只能排手里的行。
         Rows = ResultCellKinds.Sorted(Rows, index, descending);
-        Status = $"按「{name}」{(descending ? "降序" : "升序")}排序（当前页 {Rows.Count} 行）";
+        Status = $"按「{name}」{(descending ? "降序" : "升序")}排序（只在当前页 {Rows.Count} 行内排序：{SortFallbackText()}）";
     }
 
     /// <summary>
-    /// 排序能否交给服务端：需要该方言支持服务端分页、当前语句可被 <see cref="PagedSql"/> 包裹
-    /// （单条 SELECT 且未自带顶层分页），否则重跑也无从排序。
+    /// 排序没能跨页时的可操作原因。事务与"编辑器改过文本"都要排在方言能力之前说——
+    /// 它们是本次点击的直接原因，而方言能力是语句本身的性质。
+    /// </summary>
+    private string SortFallbackText()
+    {
+        if (!EditorMatchesLastRun())
+        {
+            return "编辑器内容已改动，未重跑查询";
+        }
+
+        if (HasTransaction)
+        {
+            return "事务进行中不重跑查询";
+        }
+
+        var session = _sessionProvider();
+        if (session is null)
+        {
+            return "未连接";
+        }
+
+        if (!SqlDialects.TryGet(session.Profile.DataType, out var dialect))
+        {
+            return "当前连接没有可用方言";
+        }
+
+        return PagedSql.Plan(Sql, dialect, 1, 0, _sort).SortFallback switch
+        {
+            SortFallbackReason.NoServerPaging => "该方言不支持服务端分页",
+            SortFallbackReason.SqlServerKeepsUserOrder => "SQL Server 不改写语句里已有的 ORDER BY",
+            SortFallbackReason.UnsortableColumnName => "列名重复或为表达式，按名排序会报错",
+            _ => "该语句无法被改写（非查询 / 多语句 / 自带顶层分页）",
+        };
+    }
+
+    /// <summary>
+    /// 编辑器里的文本是否仍是产生当前结果的那一条语句。
+    /// 没执行过（<c>_executedSql</c> 为 <c>null</c>）时按"是"处理，保持原有行为。
+    /// </summary>
+    private bool EditorMatchesLastRun() =>
+        _executedSql is null || string.Equals(Sql, _executedSql, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 排序能否交给服务端：需要该方言支持服务端分页、当前语句可被 <see cref="PagedSql"/> 改写
+    /// （单条 SELECT；包装方言允许语句自带顶层 LIMIT/OFFSET），否则重跑也无从排序。
     /// </summary>
     private bool SortIsPushable =>
         _sessionProvider() is { } session

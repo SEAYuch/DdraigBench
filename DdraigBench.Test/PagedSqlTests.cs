@@ -116,9 +116,38 @@ public sealed class PagedSqlTests
     [InlineData("SELECT id FROM t LIMIT 10")]
     [InlineData("SELECT id FROM t limit 10 offset 5")]
     [InlineData("SELECT id FROM t ORDER BY id LIMIT 10, 20")]
-    public void Statement_with_top_level_paging_is_not_rewrapped(string sql)
+    public void Statement_with_top_level_paging_is_still_wrapped_by_wrapper_dialects(string sql)
     {
-        Assert.Null(PagedSql.Build(sql, SqliteDialect.Instance, 100, 100));
+        // 包装方言把用户自己的 LIMIT/OFFSET 关进派生表，外层照样能叠加我们的 LIMIT/OFFSET：
+        // 于是 "SELECT … LIMIT 100000" 这类查询也能服务端分页 + 跨页排序（2026-10-16 起）。
+        Assert.Equal(
+            $"SELECT * FROM ({sql}) AS \"ddb_page\" LIMIT 100 OFFSET 100",
+            PagedSql.Build(sql, SqliteDialect.Instance, 100, 100));
+    }
+
+    [Fact]
+    public void Wrapper_dialects_all_accept_a_user_supplied_limit()
+    {
+        Assert.EndsWith(
+            "LIMIT 100 OFFSET 100",
+            PagedSql.Build("SELECT id FROM t LIMIT 10", MySqlDialect.Instance, 100, 100),
+            StringComparison.Ordinal);
+        Assert.EndsWith(
+            "LIMIT 100 OFFSET 100",
+            PagedSql.Build("SELECT id FROM t LIMIT 10", PostgreSqlDialect.Instance, 100, 100),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SqlServer_still_refuses_paging_when_the_statement_pages_by_itself()
+    {
+        // T-SQL 不能包派生表：用户自带 OFFSET/FETCH 时无处安放我们的后缀 → 整条 fail-closed。
+        Assert.Null(PagedSql.Build("SELECT id FROM dbo.t LIMIT 10", SqlServerDialect.Instance, 25, 0));
+        Assert.Null(PagedSql.Build(
+            "SELECT id FROM dbo.t ORDER BY id OFFSET 10 ROWS FETCH NEXT 10 ROWS ONLY",
+            SqlServerDialect.Instance,
+            25,
+            0));
     }
 
     [Fact]
@@ -149,7 +178,11 @@ public sealed class PagedSqlTests
     {
         // 'it''s a limit' —— 转义单引号后的 limit 不应被当成顶层分页
         Assert.NotNull(PagedSql.Build("SELECT 'it''s a limit' AS s FROM t", SqliteDialect.Instance, 10, 0));
-        Assert.Null(PagedSql.Build("SELECT 'it''s a limit' FROM t LIMIT 3", SqliteDialect.Instance, 10, 0));
+
+        // 字面量里的 limit 不是分页，后面那个真 LIMIT 3 才是：字面量必须原样留在派生表里。
+        Assert.Equal(
+            "SELECT * FROM (SELECT 'it''s a limit' FROM t LIMIT 3) AS \"ddb_page\" LIMIT 10 OFFSET 0",
+            PagedSql.Build("SELECT 'it''s a limit' FROM t LIMIT 3", SqliteDialect.Instance, 10, 0));
     }
 
     [Theory]
@@ -271,11 +304,97 @@ public sealed class PagedSqlTests
     {
         var sort = new ResultSort(0, "id", Descending: false);
 
-        // 已自带顶层分页 / 多语句脚本：排序下推也救不回来
-        Assert.Null(PagedSql.Build("SELECT id FROM t LIMIT 5", SqliteDialect.Instance, 10, 0, sort, out var a));
-        Assert.Null(PagedSql.Build("SELECT 1; SELECT 2", SqliteDialect.Instance, 10, 0, sort, out var b));
-        Assert.Null(PagedSql.Build("INSERT INTO t (id) VALUES (1)", SqliteDialect.Instance, 10, 0, sort, out var c));
-        Assert.False(a || b || c);
+        // 多语句脚本 / 非查询语句：排序下推也救不回来
+        Assert.Null(PagedSql.Build("SELECT 1; SELECT 2", SqliteDialect.Instance, 10, 0, sort, out var a));
+        Assert.Null(PagedSql.Build("INSERT INTO t (id) VALUES (1)", SqliteDialect.Instance, 10, 0, sort, out var b));
+        Assert.False(a || b);
+    }
+
+    [Fact]
+    public void Sort_is_pushed_into_the_outer_wrapper_even_when_the_statement_has_its_own_limit()
+    {
+        // 用户自带 LIMIT 不再挡下推：排序加在外层，作用范围是"用户 LIMIT 之后的那批行"。
+        var sort = new ResultSort(0, "id", Descending: true);
+        var sql = PagedSql.Build("SELECT id FROM t ORDER BY id LIMIT 10", SqliteDialect.Instance, 5, 10, sort, out var applied);
+
+        Assert.True(applied);
+        Assert.Equal(
+            "SELECT * FROM (SELECT id FROM t ORDER BY id LIMIT 10) AS \"ddb_page\" ORDER BY 1 DESC LIMIT 5 OFFSET 10",
+            sql);
+    }
+
+    [Fact]
+    public void Plan_reports_why_a_sort_could_not_be_pushed()
+    {
+        var sort = new ResultSort(0, "id", Descending: false);
+
+        // 已下推：原因恒为 None
+        var pushed = PagedSql.Plan("SELECT id FROM t", SqliteDialect.Instance, 10, 0, sort);
+        Assert.True(pushed.SortApplied);
+        Assert.Equal(SortFallbackReason.None, pushed.SortFallback);
+
+        // 多语句 / 非查询 / T-SQL 自带分页或冲突子句：语句不可改写
+        Assert.Equal(
+            SortFallbackReason.StatementNotRewritable,
+            PagedSql.Plan("SELECT 1; SELECT 2", SqliteDialect.Instance, 10, 0, sort).SortFallback);
+        Assert.Equal(
+            SortFallbackReason.StatementNotRewritable,
+            PagedSql.Plan("INSERT INTO t (id) VALUES (1)", SqliteDialect.Instance, 10, 0, sort).SortFallback);
+        Assert.Equal(
+            SortFallbackReason.StatementNotRewritable,
+            PagedSql.Plan("SELECT TOP (5) id FROM dbo.t", SqlServerDialect.Instance, 10, 0, sort).SortFallback);
+
+        // SQL Server 已有顶层 ORDER BY：分页照做，但排序不生效
+        var kept = PagedSql.Plan("SELECT id FROM dbo.t ORDER BY id", SqlServerDialect.Instance, 10, 0, sort);
+        Assert.Equal(SortFallbackReason.SqlServerKeepsUserOrder, kept.SortFallback);
+        Assert.False(kept.SortApplied);
+        Assert.Equal("SELECT id FROM dbo.t ORDER BY id OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY", kept.Sql);
+
+        // 列名重复 / 是表达式：按名排序会报错
+        Assert.Equal(
+            SortFallbackReason.UnsortableColumnName,
+            PagedSql.Plan(
+                "SELECT id, id FROM dbo.t",
+                SqlServerDialect.Instance,
+                10,
+                0,
+                new ResultSort(0, "id", Descending: false, ColumnNameIsUnique: false)).SortFallback);
+        Assert.Equal(
+            SortFallbackReason.UnsortableColumnName,
+            PagedSql.Plan(
+                "SELECT COUNT(*) FROM dbo.t",
+                SqlServerDialect.Instance,
+                10,
+                0,
+                new ResultSort(0, "COUNT(*)", Descending: false)).SortFallback);
+
+        // 分页参数非法：没有服务端分页可言
+        Assert.Equal(
+            SortFallbackReason.NoServerPaging,
+            PagedSql.Plan("SELECT id FROM t", SqliteDialect.Instance, 0, 0, sort).SortFallback);
+
+        // 没请求排序时原因无意义，恒为 None（即便语句根本不可分页）
+        Assert.Equal(
+            SortFallbackReason.None,
+            PagedSql.Plan("SELECT 1; SELECT 2", SqliteDialect.Instance, 10, 0).SortFallback);
+    }
+
+    [Fact]
+    public void For_treats_column_names_as_case_insensitive_when_deciding_uniqueness()
+    {
+        var columns = new[] { "ID", "id", "name" };
+
+        // T-SQL 默认排序规则下列名不区分大小写：ID 与 id 并存时 ORDER BY [id] 会被判 ambiguous。
+        Assert.False(ResultSort.For(columns, 0, descending: false).ColumnNameIsUnique);
+        Assert.False(ResultSort.For(columns, 1, descending: false).ColumnNameIsUnique);
+        Assert.True(ResultSort.For(columns, 2, descending: false).ColumnNameIsUnique);
+        Assert.True(ResultSort.For(columns, 2, descending: true).Descending);
+
+        // 一路走到 SQL：大小写不同的重名列在 SQL Server 上必须拒绝按名排序，而不是给出 ambiguous 的语句。
+        var duplicated = ResultSort.For(new[] { "ID", "id" }, 0, descending: false);
+        Assert.Equal(
+            SortFallbackReason.UnsortableColumnName,
+            PagedSql.Plan("SELECT ID, id FROM dbo.t", SqlServerDialect.Instance, 10, 0, duplicated).SortFallback);
     }
 
     [Fact]

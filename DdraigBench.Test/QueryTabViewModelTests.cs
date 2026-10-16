@@ -277,7 +277,37 @@ public sealed class QueryTabViewModelTests
     }
 
     [Fact]
-    public async Task User_supplied_limit_is_left_untouched()
+    public async Task User_supplied_limit_is_wrapped_so_server_paging_still_works()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (id) VALUES (1), (2), (3), (4), (5)");
+
+        // 用户自己限了 3 行：我们照样包一层做服务端分页（2026-10-16 起），
+        // 于是"翻页"作用在用户 LIMIT 之后的那 3 行上，而不是整表。
+        tab.PageSize = 2;
+        tab.Sql = "SELECT id FROM t LIMIT 3";
+        await tab.ExecuteAsync();
+
+        Assert.Equal(new[] { 1L, 2L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.True(tab.HasNextPage);
+        Assert.Contains("第 1 页", tab.Status);
+        Assert.DoesNotContain("已截断", tab.Status);
+
+        await tab.NextPageAsync();
+
+        Assert.Equal(2, tab.CurrentPage);
+        Assert.Equal(new[] { 3L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.False(tab.HasNextPage);
+        Assert.Contains("第 2 页", tab.Status);
+    }
+
+    [Fact]
+    public async Task Cross_page_sort_applies_to_the_whole_user_supplied_limit()
     {
         using var db = new TempSqliteDatabase();
         using var factory = new FreeSqlFactory();
@@ -287,15 +317,115 @@ public sealed class QueryTabViewModelTests
         session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
         session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (id) VALUES (1), (2), (3)");
 
-        tab.PageSize = 100;
-        tab.Sql = "SELECT id FROM t ORDER BY id LIMIT 2";
+        tab.PageSize = 2;
+        tab.Sql = "SELECT id FROM t LIMIT 3";
         await tab.ExecuteAsync();
 
-        // 用户自己限了 2 行：不再叠加我们的分页，也没有"已截断"（结果本身就是 2 行）。
-        Assert.Equal(2, tab.Rows.Count);
-        Assert.False(tab.HasNextPage);
-        Assert.DoesNotContain("第 ", tab.Status);
-        Assert.DoesNotContain("已截断", tab.Status);
+        await tab.SortByAsync(0); // 升序
+        await tab.SortByAsync(0); // 再点一次 → 降序：若只排当前页会得到 2,1
+
+        Assert.Contains("服务端排序，跨页有效", tab.Status);
+        Assert.Equal(new[] { 3L, 2L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+
+        await tab.NextPageAsync();
+
+        // 第二页仍是全局降序的续行（1），证明排序作用于用户 LIMIT 之后的整批行
+        Assert.Equal(new[] { 1L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.Equal(2, tab.CurrentPage);
+    }
+
+    [Fact]
+    public async Task Next_page_is_refused_when_the_editor_text_changed_after_the_last_run()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (id) VALUES (1), (2), (3), (4), (5)");
+
+        tab.PageSize = 2;
+        tab.Sql = "SELECT id FROM t";
+        await tab.ExecuteAsync();
+        Assert.True(tab.HasNextPage);
+
+        // 改了编辑器内容却没执行：翻页会拿新语句套旧页码，静默给出错的行 → 拒绝并说明该按 F5
+        tab.Sql = "SELECT id FROM t WHERE id > 1";
+        await tab.NextPageAsync();
+
+        Assert.Equal(1, tab.CurrentPage);
+        Assert.Contains("编辑器内容已改动", tab.Status);
+        Assert.Contains("F5", tab.Status);
+    }
+
+    [Fact]
+    public async Task Previous_page_is_refused_when_the_editor_text_changed_after_the_last_run()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (id INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (id) VALUES (1), (2), (3), (4), (5)");
+
+        tab.PageSize = 2;
+        tab.Sql = "SELECT id FROM t";
+        await tab.ExecuteAsync();
+        await tab.NextPageAsync();
+        Assert.Equal(2, tab.CurrentPage);
+
+        tab.Sql = "SELECT id FROM t WHERE id > 1";
+        await tab.PreviousPageAsync();
+
+        Assert.Equal(2, tab.CurrentPage);
+        Assert.Contains("编辑器内容已改动", tab.Status);
+    }
+
+    [Fact]
+    public async Task Header_sort_only_sorts_the_current_page_when_the_editor_text_changed()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (n INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (n) VALUES (9), (10), (2), (7)");
+
+        tab.PageSize = 2;
+        tab.Sql = "SELECT n FROM t";
+        await tab.ExecuteAsync();
+
+        // 文本改过：不能重跑（新语句不是网格里这批行的来源），只能排手里的行并把原因说清
+        tab.Sql = "SELECT n FROM t WHERE n > 0";
+        await tab.SortByAsync(0);
+        await tab.SortByAsync(0); // 降序
+
+        Assert.Equal(new[] { 10L, 9L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.Contains("当前页", tab.Status);
+        Assert.Contains("编辑器内容已改动，未重跑查询", tab.Status);
+        Assert.DoesNotContain("跨页有效", tab.Status);
+    }
+
+    [Fact]
+    public async Task User_supplied_limit_with_a_sort_is_no_longer_a_fallback_case()
+    {
+        using var db = new TempSqliteDatabase();
+        using var factory = new FreeSqlFactory();
+        var (session, tab) = Create(db, factory);
+        await using var _ = session;
+
+        session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (n INTEGER)");
+        session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (n) VALUES (9), (10), (2)");
+
+        tab.Sql = "SELECT n FROM t LIMIT 3";
+        await tab.ExecuteAsync();
+        await tab.SortByAsync(0);
+
+        Assert.Equal(new[] { 2L, 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.Contains("服务端排序，跨页有效", tab.Status);
     }
 
     [Fact]
@@ -409,13 +539,15 @@ public sealed class QueryTabViewModelTests
         session.Fsql.Ado.ExecuteNonQuery("CREATE TABLE t (n INTEGER)");
         session.Fsql.Ado.ExecuteNonQuery("INSERT INTO t (n) VALUES (9), (10), (2)");
 
-        // 自带顶层 LIMIT：PagedSql 拒绝二次包裹 → 排序无法下推，退回当前页排序
-        tab.Sql = "SELECT n FROM t LIMIT 3";
+        // EXPLAIN 不是 SELECT/WITH 开头的查询 → PagedSql 拒绝改写 → 排序无法下推，退回当前页并说明原因
+        tab.Sql = "EXPLAIN SELECT n FROM t";
         await tab.ExecuteAsync();
         await tab.SortByAsync(0);
 
-        Assert.Equal(new[] { 2L, 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
+        Assert.NotEmpty(tab.Rows);
         Assert.Contains("当前页", tab.Status);
+        Assert.Contains("该语句无法被改写", tab.Status);
+        Assert.DoesNotContain("跨页有效", tab.Status);
     }
 
     [Fact]
@@ -434,8 +566,9 @@ public sealed class QueryTabViewModelTests
         await tab.BeginTransactionAsync();
         await tab.SortByAsync(0);
 
-        // 事务里重跑语句 = 在事务连接上再执行一次，风险大于收益：只排当前页
+        // 事务里重跑语句 = 在事务连接上再执行一次，风险大于收益：只排当前页，并把原因写进状态栏
         Assert.Equal(new[] { 2L, 9L, 10L }, tab.Rows.Select(row => Convert.ToInt64(row[0])).ToArray());
         Assert.Contains("当前页", tab.Status);
+        Assert.Contains("事务进行中不重跑查询", tab.Status);
     }
 }

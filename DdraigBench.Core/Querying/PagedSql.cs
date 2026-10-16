@@ -19,7 +19,7 @@ public static class PagedSql
     public const string PageAlias = "ddb_page";
 
     /// <summary>
-    /// 构造分页查询；<paramref name="sql"/> 不是查询语句、已自带顶层分页、是多语句脚本、或参数非法时返回 <c>null</c>。
+    /// 构造分页查询；<paramref name="sql"/> 不是查询语句、被方言拒绝改写、是多语句脚本、或参数非法时返回 <c>null</c>。
     /// </summary>
     /// <remarks>
     /// 判定一律走 <see cref="Scan"/>（跳过字符串/引用标识符/注释）：注释里可能出现 <c>LIMIT</c> 字样，
@@ -28,7 +28,7 @@ public static class PagedSql
     /// 直接追加 OFFSET/FETCH；不包派生表，也不制造任意排序。
     /// </remarks>
     public static string? Build(string? sql, ISqlDialect dialect, int pageSize, long offset) =>
-        Build(sql, dialect, pageSize, offset, sort: null, out _);
+        Plan(sql, dialect, pageSize, offset).Sql;
 
     /// <summary>
     /// 构造分页查询，并把表头排序一并下推到服务端（跨页排序）。
@@ -54,52 +54,103 @@ public static class PagedSql
         ResultSort? sort,
         out bool sortApplied)
     {
+        var plan = Plan(sql, dialect, pageSize, offset, sort);
+        sortApplied = plan.SortApplied;
+        return plan.Sql;
+    }
+
+    /// <summary>
+    /// 构造完整的服务端分页计划：分页语句 + 排序是否真的下推 + 未下推的原因
+    /// （见 <see cref="PagedSqlPlan"/>）。
+    /// </summary>
+    /// <remarks>
+    /// 与两个 <c>Build</c> 重载的唯一区别是**多说一句为什么**：UI 之前只能拿到
+    /// <c>sortApplied == false</c>，于是所有回退都显示同一句"该语句无法跨页排序"，
+    /// 用户分不清是事务、多语句、还是 SQL Server 不肯改写 ORDER BY。
+    /// </remarks>
+    public static PagedSqlPlan Plan(
+        string? sql,
+        ISqlDialect dialect,
+        int pageSize,
+        long offset,
+        ResultSort? sort = null)
+    {
         ArgumentNullException.ThrowIfNull(dialect);
-        sortApplied = false;
+
+        // 没请求排序时"原因"没有意义，恒为 None；请求了才需要解释为什么没下推。
+        PagedSqlPlan Refused(SortFallbackReason reason) =>
+            new(null, false, sort is null ? SortFallbackReason.None : reason);
 
         if (pageSize <= 0 || offset < 0 || !dialect.SupportsServerPaging)
         {
-            return null;
+            return Refused(SortFallbackReason.NoServerPaging);
         }
 
         var statement = (sql ?? string.Empty).Trim();
         if (statement.Length == 0)
         {
-            return null;
+            return Refused(SortFallbackReason.StatementNotRewritable);
         }
 
-        var scan = Scan(statement, dialect.RequiresTopLevelOrderByForPaging);
-        if (!scan.StartsWithQuery || scan.HasTopLevelPaging || scan.MultipleStatements)
+        // 需要顶层 ORDER BY 的方言（SQL Server）不能包派生表：既加不了自己的 OFFSET/FETCH，
+        // 也改不动用户已有的 TOP / OPTION / FOR / 分页子句。
+        var requiresTopLevelOrderBy = dialect.RequiresTopLevelOrderByForPaging;
+        var scan = Scan(statement, requiresTopLevelOrderBy);
+        if (!scan.StartsWithQuery || scan.MultipleStatements)
         {
-            return null;
+            return Refused(SortFallbackReason.StatementNotRewritable);
         }
 
-        // 需要顶层 ORDER BY 的方言（SQL Server）：已有的 ORDER BY 不允许我们改写（改错会改变用户语义），
-        // 没有 ORDER BY 时可以用排序目标现造一段；两者都做不到就整条放弃分页（保持原样执行）。
-        string? injectedOrderBy = null;
-        if (dialect.RequiresTopLevelOrderByForPaging)
+        string? injectedOrderBy;
+        if (requiresTopLevelOrderBy)
         {
-            if (scan.HasTsqlPagingConflict)
+            // 用户自带顶层分页（OFFSET/FETCH）或 TOP/OPTION/FOR：后缀无处安放，整条放弃分页。
+            if (scan.HasTopLevelPaging || scan.HasTsqlPagingConflict)
             {
-                return null;
+                return Refused(SortFallbackReason.StatementNotRewritable);
             }
 
-            if (!scan.HasTopLevelOrderBy)
+            if (scan.HasTopLevelOrderBy)
             {
-                injectedOrderBy = sort is ResultSort tsqlSort ? BuildOrderBy(dialect, tsqlSort) : null;
-                if (injectedOrderBy is null)
-                {
-                    return null;
-                }
+                // 改写用户已有的 ORDER BY 会改变语义：分页照做，但**不**声称排序生效。
+                return Finish(
+                    statement, scan, dialect, injectedOrderBy: null, pageSize, offset,
+                    SortFallbackReason.SqlServerKeepsUserOrder);
+            }
+
+            injectedOrderBy = sort is ResultSort tsqlSort ? BuildOrderBy(dialect, tsqlSort) : null;
+            if (injectedOrderBy is null)
+            {
+                // 没有 ORDER BY 又造不出一段 → OFFSET/FETCH 不合法，整条放弃分页。
+                return Refused(SortFallbackReason.UnsortableColumnName);
             }
         }
         else
         {
+            // 包装方言把用户语句（连同它自己的 LIMIT/OFFSET）关进派生表：外层再加排序与分页，
+            // 于是"用户写了 LIMIT 100000"的查询同样能跨页排序（派生表里的 LIMIT 是合法的）。
             injectedOrderBy = sort is ResultSort wrapperSort ? BuildOrderBy(dialect, wrapperSort) : null;
+            if (sort is not null && injectedOrderBy is null)
+            {
+                return Finish(
+                    statement, scan, dialect, injectedOrderBy: null, pageSize, offset,
+                    SortFallbackReason.UnsortableColumnName);
+            }
         }
 
-        sortApplied = injectedOrderBy is not null;
+        return Finish(statement, scan, dialect, injectedOrderBy, pageSize, offset, SortFallbackReason.None);
+    }
 
+    /// <summary>收尾：去分号、补行注释换行、按方言拼分页/排序后缀。</summary>
+    private static PagedSqlPlan Finish(
+        string statement,
+        ScanResult scan,
+        ISqlDialect dialect,
+        string? injectedOrderBy,
+        int pageSize,
+        long offset,
+        SortFallbackReason fallback)
+    {
         // 结尾的顶层分号必须先去掉；保留它会让派生表或 OFFSET/FETCH 后缀变成语法错误。
         var body = scan.LastTopLevelSemicolon >= 0
             ? statement[..scan.LastTopLevelSemicolon].TrimEnd()
@@ -113,18 +164,21 @@ public static class PagedSql
         // 行尾 -- 注释会吃掉后缀，所以一定补换行。
         var terminator = scan.EndsInLineComment ? "\n" : string.Empty;
         var paging = dialect.BuildPaging(pageSize, offset);
+        var sortApplied = injectedOrderBy is not null;
 
         // SQL Server 要求 OFFSET/FETCH 直接跟在带 ORDER BY 的查询后；不能套派生表，
         // 因为 T-SQL 禁止派生表中的裸 ORDER BY。requires-order 方言因此走直加后缀分支。
         if (dialect.RequiresTopLevelOrderByForPaging)
         {
             var order = injectedOrderBy is null ? string.Empty : $"{injectedOrderBy} ";
-            return $"{body}{terminator} {order}{paging}";
+            return new PagedSqlPlan($"{body}{terminator} {order}{paging}", sortApplied, fallback);
         }
 
         var outerOrder = injectedOrderBy is null ? string.Empty : $" {injectedOrderBy}";
-        return $"SELECT * FROM ({body}{terminator}) AS {dialect.QuoteIdentifier(PageAlias)}"
-            + $"{outerOrder} {paging}";
+        return new PagedSqlPlan(
+            $"SELECT * FROM ({body}{terminator}) AS {dialect.QuoteIdentifier(PageAlias)}{outerOrder} {paging}",
+            sortApplied,
+            fallback);
     }
 
     /// <summary>
@@ -365,6 +419,15 @@ public static class PagedSql
     /// 扫描结果。<paramref name="LastTopLevelSemicolon"/> 为 <c>-1</c> 表示没有顶层分号；
     /// <paramref name="EndsInLineComment"/> 为真表示语句以 <c>-- …</c> 行注释收尾。
     /// </summary>
+    private readonly record struct ScanResult(
+        bool StartsWithQuery,
+        bool HasTopLevelPaging,
+        bool HasTopLevelOrderBy,
+        bool HasTsqlPagingConflict,
+        bool MultipleStatements,
+        int LastTopLevelSemicolon,
+        bool EndsInLineComment);
+
     private static int SkipBracketIdentifier(string statement, int index)
     {
         index++; // '['
@@ -388,34 +451,7 @@ public static class PagedSql
         return statement.Length;
     }
 
-    private readonly record struct ScanResult(
-        bool StartsWithQuery,
-        bool HasTopLevelPaging,
-        bool HasTopLevelOrderBy,
-        bool HasTsqlPagingConflict,
-        bool MultipleStatements,
-        int LastTopLevelSemicolon,
-        bool EndsInLineComment);
-
     private static bool IsWordStart(char value) => char.IsLetter(value) || value == '_';
 
     private static bool IsWordPart(char value) => char.IsLetterOrDigit(value) || value is '_' or '$';
-
-    private static bool IsWordBoundary(string statement, int index)
-    {
-        var before = index > 0 ? statement[index - 1] : ' ';
-        return !char.IsLetterOrDigit(before) && before != '_';
-    }
-
-    private static bool MatchesKeyword(string statement, int index, string keyword)
-    {
-        if (index + keyword.Length > statement.Length
-            || !statement.AsSpan(index, keyword.Length).Equals(keyword, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var after = index + keyword.Length < statement.Length ? statement[index + keyword.Length] : ' ';
-        return !char.IsLetterOrDigit(after) && after != '_';
-    }
 }

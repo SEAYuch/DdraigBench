@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
-[![Tests: 415 total](https://img.shields.io/badge/tests-415%20total-success.svg)]
+[![Tests: 425 total](https://img.shields.io/badge/tests-425%20total-success.svg)]
 
 ---
 
@@ -13,7 +13,7 @@
 | 项 | 状态 |
 |---|---|
 | 构建 | `dotnet build DdraigBench.slnx -c Release` — **零警告零错误** |
-| 测试 | **415 个用例**（离线通道 383 通过 / 32 跳过。跳过项全部是靶机与平台相关用例——未设环境变量的方言集成测、平台密钥库与 Unix 权限类用例。**靶机补跑（2026-10-15）**：接入 `DDRAIGBENCH_MYSQL`+`DDRAIGBENCH_PG`（MariaDB 10.5.29 / PostgreSQL 13.23）为 **382 通过 / 25 跳过 / 0 失败**；SQL Server 靶机（192.168.17.130:1433）当日拒绝连接，设了 `DDRAIGBENCH_SQLSERVER` 后 SQL Server 用例按设计连接超时并 `Assert.Skip`（整轮 382 通过 / 25 跳过 / 0 失败、无挂起）；**随后查明是该机上 rootless podman 容器 `ddb-sqlserver` 处于 `Exited`，`podman start` 后约 30 秒恢复，接入三个靶机变量得 384 通过 / 23 跳过 / 0 失败**（9 个方言集成测全部真跑）；**2026-10-16** 又按用户要求把该靶机的 SQL Server 从 rootless podman 容器换成微软原生 `mssql-server` 包（`mssql-server.service` 为 `enabled` + `active`、1433 监听，SA 口令沿用不变，故无需改环境变量），三靶机通道复跑同为 **384 通过 / 23 跳过 / 0 失败**（安装与下载链路的坑详见 AGENTS.md §7）。上一轮（380 用例）离线为 348 通过 / 32 跳过，更早的 370 用例一轮接 MariaDB + PostgreSQL 为 345 通过 / 25 跳过，三靶机 347 通过 / 23 跳过）。**2026-10-16（测试债清零）**：新增 8 个用例（`EditorText` 5 + `Window` 2 + `SessionThreadAffinity` 1）→ 离线 **415 / 383 / 32 / 0**；本轮靶机通道未能复跑（`192.168.17.130` 无 ping 应答、SSH banner 交换超时，3306/5432/1433 虽被 TCP 应答但协议层无响应），待宿主机恢复后按同一批用例补跑 |
+| 测试 | **425 个用例**（离线通道 393 通过 / 32 跳过。跳过项全部是靶机与平台相关用例——未设环境变量的方言集成测、平台密钥库与 Unix 权限类用例。**靶机补跑（2026-10-15）**：接入 `DDRAIGBENCH_MYSQL`+`DDRAIGBENCH_PG`（MariaDB 10.5.29 / PostgreSQL 13.23）为 **382 通过 / 25 跳过 / 0 失败**；SQL Server 靶机（192.168.17.130:1433）当日拒绝连接，设了 `DDRAIGBENCH_SQLSERVER` 后 SQL Server 用例按设计连接超时并 `Assert.Skip`（整轮 382 通过 / 25 跳过 / 0 失败、无挂起）；**随后查明是该机上 rootless podman 容器 `ddb-sqlserver` 处于 `Exited`，`podman start` 后约 30 秒恢复，接入三个靶机变量得 384 通过 / 23 跳过 / 0 失败**（9 个方言集成测全部真跑）；**2026-10-16** 又按用户要求把该靶机的 SQL Server 从 rootless podman 容器换成微软原生 `mssql-server` 包（`mssql-server.service` 为 `enabled` + `active`、1433 监听，SA 口令沿用不变，故无需改环境变量），三靶机通道复跑同为 **384 通过 / 23 跳过 / 0 失败**（安装与下载链路的坑详见 AGENTS.md §7）。上一轮（380 用例）离线为 348 通过 / 32 跳过，更早的 370 用例一轮接 MariaDB + PostgreSQL 为 345 通过 / 25 跳过，三靶机 347 通过 / 23 跳过）。**2026-10-16（测试债清零）**：新增 8 个用例（`EditorText` 5 + `Window` 2 + `SessionThreadAffinity` 1）→ 离线 **415 / 383 / 32 / 0**；本轮靶机通道未能复跑（`192.168.17.130` 无 ping 应答、SSH banner 交换超时，3306/5432/1433 虽被 TCP 应答但协议层无响应），待宿主机恢复后按同一批用例补跑。**2026-10-16（排序边界打磨）**：`PagedSqlTests` 净增 6 例、`QueryTabViewModelTests` 净增 4 例（另各改写 1 例旧契约）→ 离线 **425 / 成功 393 / 跳过 32 / 失败 0**；本轮靶机通道仍未复跑（`192.168.17.130` 依旧无 ping 应答、SSH 报 `Connection timed out during banner exchange`，三个端口 TCP 可连但协议层无应答），待宿主机恢复后按同一批 425 个用例补跑 |
 | 已实现方言 | SQLite、MySQL / MariaDB、PostgreSQL、SQL Server |
 | 里程碑 | M1 闭环 / M2 多方言 / M3 编辑器与会话 / M4 生产力功能 / M5-1 目录查询层 / M5-2 模式层 / **M5-3 元数据完整性 — 已落地并通过靶机验证** |
 
@@ -37,9 +37,9 @@
 - SQL 编辑器（AvaloniaEdit）：行号、等宽、不换行
 - 执行 / **取消**（长查询可中断）
 - **事务模式**：显式提交 / 回滚，切换连接时自动回滚
-- **真·服务端分页**（M3-5）：SQLite / MySQL / PostgreSQL 查询包成派生表 + `LIMIT/OFFSET`，多取一行判定"有无下一页"；工具条可配每页行数并翻页；结果网格行虚拟化。SQL Server 仅对顶层带 `ORDER BY` 的简单 SELECT 直加 `OFFSET/FETCH` 服务端分页（不包派生表）；无序、多语句、已有分页及含 `TOP`/`OPTION`/`FOR` 冲突语句 fail-closed，仍走客户端读取上限
+- **真·服务端分页**（M3-5）：SQLite / MySQL / PostgreSQL 查询包成派生表 + `LIMIT/OFFSET`，多取一行判定"有无下一页"；工具条可配每页行数并翻页；结果网格行虚拟化。用户语句自带顶层 `LIMIT/OFFSET` 时同样能包（派生表里的 `LIMIT` 合法，外层再叠加分页与排序，2026-10-16 起）。SQL Server 仅对顶层带 `ORDER BY` 的简单 SELECT 直加 `OFFSET/FETCH` 服务端分页（不包派生表）；无序、多语句、已有分页及含 `TOP`/`OPTION`/`FOR` 冲突语句 fail-closed，仍走客户端读取上限
 - 结果集单元格直读无类型行数组（不经绑定引擎）；**列类型感知**：按已读回的值推断列类型，数字与日期右对齐、文本左对齐；二进制列（BLOB）显示为十六进制前缀，超长只截前 32 字节并标注总长，不再显示 `System.Byte[]`
-- **表头点击排序（跨页）**：按列类型比较（数字按数值、"10" > "9"；日期按时间点；空值一律排最后；同分保持原顺序），再点同一列切换升降序。能下推就**下推到服务端**——排序作用在整表上，翻页仍是全局有序；下推不成立（语句自带顶层 `LIMIT`、SQL Server 已有顶层 `ORDER BY` 或列名重复/是表达式、事务中）时退回"只排当前页已读回的行"并在状态栏写明
+- **表头点击排序（跨页）**：按列类型比较（数字按数值、"10" > "9"；日期按时间点；空值一律排最后；同分保持原顺序），再点同一列切换升降序。能下推就**下推到服务端**——排序作用在整表上，翻页仍是全局有序；SQLite/MySQL/PostgreSQL 会把语句（**连同用户自带的顶层 `LIMIT/OFFSET`**）一起关进派生表，因此 `LIMIT 100000` 这类查询同样跨页有序。下推不成立时（SQL Server 已有顶层 `ORDER BY`、列名重复或形如 `COUNT(*)` 的表达式、事务进行中、编辑器文本已改动未重跑）退回"只排当前页已读回的行"，并在状态栏**写明具体原因**（不再是笼统一句"无法跨页排序"）。**翻页前会核对编辑器文本**：改过 SQL 却没执行（F5）时翻页被拒绝、页码不变并提示先执行，避免用旧排序去跑一条新语句
 - **导出默认路径**：默认落在「文档」目录下的 `export.csv` / `export.sql`（绝对路径），不再相对进程工作目录（快捷方式启动时那是 `System32` 之类不可写的位置）
 
 **导出**
@@ -125,14 +125,14 @@ dotnet run   --project DdraigBench                # 启动应用
 5. **线程归属类修复现在都有红测对照（2026-10-16 补齐最后一条）**——事务的取租约 / 提交 / 回滚移出 UI 线程（M4）：`DbSession` 是 `sealed`、`LeaseRawAsync` 不可覆写，此前只能由既有真 SQLite 事务往返测兜底。现加**实例级**观测缝 `DbSession.WorkObserved`（`internal`，生产路径恒 `null`，仅多一次 null 判断），`SessionThreadAffinityTests` 在自建非池线程上跑 `BeginTransactionAsync` + `CommitAsync`，断言 `lease-acquire` / `lease-return` 都没落在调用线程；去掉 `QueryTabViewModel` 两处 `Task.Run` 包裹会各自变红（±1 红，实测）。其余修复（启动崩溃、执行重入、并发连接、分页解析、清单版本闸、连接串转义、目录截断、取消契约、存储线程归属、展开失败重试、折叠展开还原、BLOB 显示、导出默认路径、列类型对齐与排序）同样有"先见红再修"的回归测。
 6. **UI 视觉验收为人工项**——开发环境无显示器，截图未入库。强调按钮文字色被压掉的问题**已修复（2026-10-11）**：`App.axaml` 原先有一条无条件设 `Foreground` 的隐式 `Style Selector="TextBlock"`，把强调按钮内文字从 `Button` 继承的 `White` 压成正文色 `#FF1B2430`（蓝底 `#FF155A9C`，对比度约 2.2:1，实测）。现改为只在 `Style Selector="Window"` 上设一次前景色，按钮自身的 `Foreground` 在继承链上更近而胜出；回归测 `ThemeContrastTests` 用「样式表 + 继承」两路断言守住，并带 WCAG 4.5:1 对比度门槛。
 7. `ReactiveUI.Avalonia.Autofac` 死重**已清理（2026-10-11，C5）**：从未接线的容器桥包已从 `DdraigBench.csproj` 删除，DI 走 Splat 默认定位器（按 AGENTS.md §2.4 D2 取 b）。
-8. **结果网格排序的边界**——表头点击会尽量把 `ORDER BY` 下推到服务端（排序在 `LIMIT/OFFSET` 之前生效，因此跨页有序）；但用户 SQL 自带顶层 `LIMIT`、是多语句脚本或非查询语句时 `PagedSql` 拒绝改写，退回"只排当前页"；SQL Server 另有两条限制：已有顶层 `ORDER BY` 时不改写用户语义（保分页、不排序），列名重复或形如 `COUNT(*)` 的表达式列无法按名排序（宁可不排序也不给出会报错的 SQL）。这些情况状态栏都会注明"当前页 N 行"。
+8. **结果网格排序的边界**——表头点击会尽量把 `ORDER BY` 下推到服务端（排序在 `LIMIT/OFFSET` 之前生效，因此跨页有序）。SQLite/MySQL/PostgreSQL 连**用户自带的顶层 `LIMIT/OFFSET`** 也能一起包进派生表（2026-10-16 起），外层再叠加排序与分页，所以"我先 `LIMIT` 了十万行"不再等于"排序只对本页有效"。仍会退回"只排当前页"的情形：多语句脚本、非查询语句（如 `EXPLAIN`）、SQL Server 已有顶层 `ORDER BY`（不改写用户语义：保分页、不排序）、列名重复或形如 `COUNT(*)` 的表达式列（宁可不排序也不给出会报错的 SQL）、事务进行中（不在事务连接上重跑语句）、编辑器文本已改动而未重新执行。**这些情况状态栏不只写"当前页 N 行"，还会写明原因**（"事务进行中不重跑查询" / "该语句无法被改写（非查询 / 多语句）" / "SQL Server 不改写语句里已有的 ORDER BY" / "列名重复或为表达式，按名排序会报错"）。另外，列名唯一性按**大小写不敏感**判定：`ID` 与 `id` 并存时不会生成歧义的 `ORDER BY [id]`。翻页（上一页/下一页）前会核对编辑器文本，改过未执行则拒绝翻页、提示先按 F5。
 
 ## 路线图
 
 - M5-3：SQL Server 目录对象/定义查询**已靶机验证通过**；MySQL/PG 触发器与例程定义、PG 物化视图定义、MySQL 原始表定义（`SHOW CREATE TABLE`）、计划事件与表节点下的分区子树**均已靶机验证通过**（2026-10-12）。SQL Server 仅对带顶层 `ORDER BY` 的简单 SELECT 尝试直接 `OFFSET/FETCH`，无序/多语句/已有分页/TOP/OPTION/FOR 查询保留客户端读取上限；该 T-SQL 分支已于 2026-10-12 经 SQL Server 2022 Developer 靶机验证（有序首末页均取到预期记录，无序与危险 SQL 形状 fail-closed）。SQL Server 不保存原始 `CREATE TABLE` 文本，这不是可读取的原始定义通道；表 DDL 继续按元数据重建。
 - 启动时自动重连上次连接——**已完成（2026-10-13）**，见「已知限制」3。
 - 跨平台密钥库打磨（libsecret 直连评估 + 钥匙串失败原因可读提示）——**已完成（2026-10-15）**：libsecret 直连复核结论为**维持 D-Bus**（`Ace4896.DBus.Services.Secrets`；libsecret 本体 LGPL-2.1-or-later、需 4 个原生 `.so`、异步要 GLib 主循环，且没有任何我们缺的能力——collection/别名/`SearchItems`/`Lock`/`Unlock`/DH 会话/Prompt 都是 Secret Service D-Bus 规范自身能力；详见 AGENTS.md §2.8）；密钥库回退原因经 `SecretStoreFallback` 翻成可操作中文，顶部告警不再只写"未检测到可用的系统密钥库"
-- 结果网格排序的**剩余边界打磨**（跨页/服务端排序已完成 2026-10-13，见「已知限制」8：用户 SQL 自带顶层 `LIMIT`、SQL Server 已有 `ORDER BY` 或表达式列名时仍退回当前页排序）
+- 结果网格排序的**剩余边界打磨**——**已完成（2026-10-16）**：`PagedSql.Plan` 取代原来的"单一 `null` 即无法分页"判定，把"为什么没下推"分成 `NoServerPaging` / `StatementNotRewritable` / `SqlServerKeepsUserOrder` / `UnsortableColumnName` 四种原因写进状态栏；SQLite/MySQL/PG 现在连用户自带的顶层 `LIMIT/OFFSET` 也能包进派生表做跨页排序（SQL Server 因不能包派生表仍 fail-closed）；列名唯一性改为大小写不敏感（`ID`/`id` 并存时不再生成歧义 SQL）；翻页与排序前核对编辑器文本，改过未执行则拒绝并提示按 F5（此前会静默用旧排序跑新语句）；顺带删除 `PagedSql` 中的死代码 `IsWordBoundary` / `MatchesKeyword`。见「已知限制」8 与 AGENTS.md §8「第八批改进」
 - 会话并发上限与生命周期——**已完成（2026-10-15）**：`Core/Sessions/ISessionManager.cs` + `SessionManager.cs` 落地（默认上限 `MaxOpenSessions = 1`，超限开新会话抛 `InvalidOperationException` 而不是静默多挂连接），`MainViewModel` 不再自行 `new DbSession`/`DisposeAsync`，`App` 在 `ShutdownRequested` 里先 `e.Cancel = true`、`await viewModel.DisposeAsync()` 之后才 `desktop.Shutdown()`（否则退出时连接池不释放）。详见 AGENTS.md §4「会话生命周期与并发上限」
 
 ## 贡献
