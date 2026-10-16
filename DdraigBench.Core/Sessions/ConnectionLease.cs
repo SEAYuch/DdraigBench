@@ -8,15 +8,25 @@ namespace DdraigBench.Core.Sessions;
 public sealed class ConnectionLease : IDisposable, IAsyncDisposable
 {
     private readonly Object<DbConnection> _leased;
+    private readonly Action<string>? _observed;
 
-    internal ConnectionLease(Object<DbConnection> leased) => _leased = leased;
+    internal ConnectionLease(Object<DbConnection> leased, Action<string>? observed = null)
+    {
+        _leased = leased;
+        _observed = observed;
+    }
 
     public DbConnection Connection => _leased.Value;
 
-    public void Dispose() => _leased.Dispose();
+    public void Dispose()
+    {
+        _observed?.Invoke("lease-return");
+        _leased.Dispose();
+    }
 
     public ValueTask DisposeAsync()
     {
+        _observed?.Invoke("lease-return");
         _leased.Dispose();
         return ValueTask.CompletedTask;
     }
