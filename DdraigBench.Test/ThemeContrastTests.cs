@@ -17,10 +17,11 @@ namespace DdraigBench.Test;
 /// <c>InvalidOperationException</c>（即 AGENTS.md §7 记录的线程归属限制）。
 /// </para>
 /// </summary>
+[Collection(HeadlessUiCollection.Name)]
 public sealed class ThemeContrastTests
 {
     [Fact]
-    public void Application_styles_do_not_paint_TextBlock_foreground_directly()
+    public void Application_styles_do_not_paint_TextBlock_foreground_directly() => TestUiThread.Run(() =>
     {
         var offenders = Application.Current!.Styles.OfType<Style>()
             .Where(style => style.Selector?.ToString() == "TextBlock")
@@ -29,10 +30,10 @@ public sealed class ThemeContrastTests
             .ToList();
 
         Assert.Empty(offenders);
-    }
+    });
 
     [Fact]
-    public void Window_style_carries_the_workbench_text_foreground()
+    public void Window_style_carries_the_workbench_text_foreground() => TestUiThread.Run(() =>
     {
         var windowStyle = Assert.Single(
             Application.Current!.Styles.OfType<Style>(),
@@ -40,7 +41,7 @@ public sealed class ThemeContrastTests
 
         Assert.Contains(windowStyle.Setters.OfType<Setter>(),
             setter => setter.Property == Window.ForegroundProperty);
-    }
+    });
 
     /// <summary>
     /// 上一条修复成立的前提：按钮的 Foreground 能沿逻辑树继承到其内容里的 TextBlock。
@@ -48,17 +49,17 @@ public sealed class ThemeContrastTests
     /// 而上面两条样式表断言仍是绿的——所以这条要单独守着（不需要 TopLevel，避免 Composition）。
     /// </summary>
     [Fact]
-    public void Button_foreground_is_inherited_by_its_content_text()
+    public void Button_foreground_is_inherited_by_its_content_text() => TestUiThread.Run(() =>
     {
         var label = new TextBlock { Text = "运行" };
         var button = new Button { Foreground = Brushes.White, Content = label };
         Assert.Same(button, label.Parent);
 
         Assert.Equal(ColorOf(button.Foreground), ColorOf(label.Foreground));
-    }
+    });
 
     [Fact]
-    public void Accent_text_on_the_accent_surface_meets_wcag()
+    public void Accent_text_on_the_accent_surface_meets_wcag() => TestUiThread.Run(() =>
     {
         var surface = ColorOfBrush("WorkbenchAccentBrush");
         var accentText = ColorOfBrush("WorkbenchAccentTextBrush");
@@ -67,7 +68,7 @@ public sealed class ThemeContrastTests
         Assert.True(Contrast(accentText, surface) >= 4.5,
             $"强调按钮文字对比度不足：{accentText} on {surface}；" +
             $"正文色压上去只有 {Contrast(bodyText, surface):F2}:1（A2 的缺陷形态）");
-    }
+    });
 
     private static Color ColorOfBrush(string key)
     {

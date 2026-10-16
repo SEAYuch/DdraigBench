@@ -18,6 +18,7 @@ using DdraigBench.ViewModels;
 
 namespace DdraigBench.Test;
 
+[Collection(HeadlessUiCollection.Name)]
 public sealed class ActivationBridgeTests
 {
     // ------------------------------------------------------------------ 已保存连接（ListBox）

@@ -36,7 +36,8 @@ public sealed class TestAppFixture : IDisposable
             try
             {
                 AppBuilder.Configure<global::DdraigBench.App>()
-                    .UseHeadless(new AvaloniaHeadlessPlatformOptions())
+                    .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
+                    .UseSkia()
                     .SetupWithoutStarting();
             }
             catch (Exception ex)

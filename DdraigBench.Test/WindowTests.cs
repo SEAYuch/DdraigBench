@@ -7,6 +7,7 @@ using DdraigBench.Views;
 
 namespace DdraigBench.Test;
 
+[Collection(HeadlessUiCollection.Name)]
 public sealed class WindowTests
 {
     [Fact]
